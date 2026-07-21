@@ -1279,109 +1279,12 @@ init();</script>
 GDRIVE_HTML = '''<!DOCTYPE html>
 <html lang="id">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cloud Storage — Google Drive</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0d0221;--card:#1a0a3e;--border:#6c3baa;--accent:#a78bfa;--accent2:#8b5cf6;--text:#e0e0e0;--muted:#6b7280;--danger:#f87171;--green:#34d399;--yellow:#fbbf24}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.topbar{background:#1a0a3e;border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.topbar h1{font-size:18px;color:var(--accent)}
-.topbar .right{display:flex;align-items:center;gap:12px}
-.topbar .right button{padding:6px 14px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--accent);font-size:13px;cursor:pointer}
-.wrap{max-width:1000px;margin:24px auto;padding:0 24px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px}
-.status-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.status-dot{width:10px;height:10px;border-radius:50%;background:var(--danger)}
-.status-dot.on{background:var(--green)}
-.status-text{font-size:13px;color:var(--muted)}
-.btn{padding:10px 18px;background:linear-gradient(135deg,#6c3baa,#a78bfa);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
-.btn:disabled{opacity:.5;cursor:not-allowed}
-.btn.ghost{background:transparent;border:1px solid var(--border);color:var(--accent)}
-.breadcrumb{padding:12px 0;display:flex;gap:4px;flex-wrap:wrap;align-items:center;font-size:14px}
-.breadcrumb a{color:var(--accent);text-decoration:none;cursor:pointer}
-.breadcrumb a:hover{text-decoration:underline}
-.breadcrumb .sep{color:var(--muted);margin:0 2px}
-.breadcrumb .current{color:var(--text);font-weight:600}
-.toolbar{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
-.toolbar select{padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:13px}
-.list{max-height:480px;overflow-y:auto;border:1px solid var(--border);border-radius:12px}
-.row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(108,59,170,.2);cursor:pointer;transition:.15s}
-.row:last-child{border-bottom:none}
-.row:hover{background:rgba(167,139,250,.06)}
-.row.selected{background:rgba(167,139,250,.12)}
-.row .check{width:18px;height:18px;accent-color:var(--accent);cursor:pointer;flex-shrink:0}
-.row .ficon{font-size:20px;flex-shrink:0}
-.row .fname{flex:1;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.row .fmeta{font-size:11px;color:var(--muted);flex-shrink:0}
-.empty{text-align:center;padding:48px 20px;color:var(--muted)}
-.empty svg{width:48px;height:48px;stroke:var(--border);margin-bottom:8px}
-.progress-panel{display:none;margin-top:16px;background:#0d0221;border:1px solid var(--border);border-radius:12px;padding:16px;max-height:260px;overflow-y:auto}
-.progress-panel.show{display:block}
-.progress-panel h3{font-size:14px;color:var(--accent);margin-bottom:12px}
-.pitem{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13px}
-.pitem .pname{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pitem .pstatus{font-size:11px;flex-shrink:0}
-.pstatus.ok{color:var(--green)}.pstatus.err{color:var(--danger)}
-.help{margin-top:16px;font-size:12px;color:var(--muted);line-height:1.6}
-.help code{background:#0d0221;padding:2px 6px;border-radius:4px;color:var(--accent)}
-.back{display:inline-block;margin-top:16px;color:var(--accent);text-decoration:none;font-size:13px}
-</style>
-</head>
-<body>
-<div class="topbar">
-  <h1>☁️ Google Drive</h1>
-  <div class="right">
-    <button onclick="doLogout()">Logout</button>
-  </div>
-</div>
-<div class="wrap">
-  <div class="card">
-    <div class="status-bar">
-      <span class="status-dot" id="statusDot"></span>
-      <span class="status-text" id="statusText">Memeriksa koneksi...</span>
-      <button class="btn ghost" id="connectBtn" style="display:none" onclick="connectDrive()">🔗 Hubungkan Google Drive</button>
-      <button class="btn ghost" id="disconnectBtn" style="display:none" onclick="disconnectDrive()">⏏ Putuskan</button>
-    </div>
-
-    <div id="browserSection" style="display:none">
-      <div class="breadcrumb" id="breadcrumb"></div>
-      <div class="toolbar">
-        <select id="folderSelect" onchange="goSelectedFolder()"></select>
-        <button class="btn" id="copyBtn" onclick="copySelected()" disabled>📋 Copy ke Telegram (<span id="selCount">0</span>)</button>
-        <button class="btn green" id="syncBtn" onclick="syncDrive()">🔄 Sinkron Otomatis</button>
-        <button class="btn yellow" id="pauseBtn" onclick="pauseSync()" style="display:none">⏸ Pause</button>
-        <button class="btn" id="resumeBtn" onclick="resumeSync()" style="display:none">▶ Lanjut</button>
-        <button class="btn red" id="cancelBtn" onclick="cancelSync()" style="display:none">✖ Batal</button>
-        <button class="btn yellow" id="retryBtn" onclick="retrySync()" style="display:none">🔄 Retry Gagal</button>
-      </div>
-      <div id="syncStatus" style="display:none;margin-bottom:12px;padding:12px 16px;background:rgba(168,85,247,.1);border:1px solid var(--border);border-radius:10px;font-size:13px"></div>
-      <div class="list" id="fileList"></div>
-      <div class="progress-panel" id="progressPanel">
-        <h3>📤 Copy Progress</h3>
-        <div id="progressList"></div>
-      </div>
-    </div>
-
-    <div class="empty" id="notConnected" style="display:none">
-      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-      <p>Belum terhubung ke Google Drive.</p>
-      <p style="margin-top:6px">Klik "Hubungkan Google Drive" untuk memulai.</p>
-    </div>
-
-    <div class="help">
-      <strong>Setup Google Cloud:</strong><br>
-      1. Buat project di <code>console.cloud.google.com</code><br>
-      2. Enable <code>Google Drive API</code><br>
-      3. Credentials → OAuth client ID (Web application) → add redirect <code>/api/gdrive/callback</code><br>
-      4. Masukkan <code>GDRIVE_CLIENT_ID</code> & <code>GDRIVE_CLIENT_SECRET</code> ke <code>config.env</code><br>
-      5. Tambahkan akun Google Anda sebagai Test User di OAuth consent screen
-    </div>
-    <a class="back" href="/drive">← Kembali ke Drive</a>
-  </div>
-</div>
-<script>
+*{box-sizing:border-box;margin:0;padding:0} :root{--bg:#090b15;--panel:#111424;--panel2:#161a2d;--line:#282b48;--purple:#7c3aed;--purple2:#9b6cff;--txt:#f7f7ff;--muted:#9ca3af;--green:#10b981;--yellow:#fbbf24;--red:#fb7185} body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}.layout{display:flex;min-height:100vh}.app-sidebar{width:244px;flex:none;background:#0c0f1d;border-right:1px solid var(--line);padding:25px 15px;display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0}.brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800;padding:0 10px 27px}.cloud-logo{color:#c5a7ff;font-size:27px}.nav{display:grid;gap:5px}.nav a{color:#b5b9cf;text-decoration:none;padding:12px;border-radius:10px;font-size:14px;display:flex;gap:12px;align-items:center}.nav a:hover,.nav a.active{background:linear-gradient(90deg,rgba(124,58,237,.28),rgba(124,58,237,.05));color:white}.section-label{font-size:11px;color:#6f758f;font-weight:700;margin:25px 12px 9px;letter-spacing:.08em}.storage-card{display:flex;gap:10px;padding:13px 12px;border:1px solid #4e2c8d;border-radius:12px;background:linear-gradient(135deg,#25124d,#12172c);font-size:13px}.storage-card b{display:block}.storage-card small{display:block;color:var(--muted);margin-top:3px}.infinity{color:#b992ff;font-size:24px}.theme{display:flex;justify-content:space-between;align-items:center;padding:23px 12px;color:var(--muted);font-size:13px}.switch{width:36px;height:20px;border-radius:100px;background:var(--purple);padding:3px}.switch i{display:block;margin-left:16px;width:14px;height:14px;border-radius:50%;background:white}.service-nav{margin-top:auto;display:grid;gap:7px}.service-nav a{padding:12px;border-radius:10px;text-decoration:none;color:#aeb3c9;font-size:14px}.service-nav a.active{color:#fff;background:linear-gradient(120deg,#7c3aed,#5531bb);box-shadow:0 5px 20px rgba(124,58,237,.25)}.main{margin-left:244px;width:calc(100% - 244px);padding:18px 28px 35px}.top{height:48px;display:flex;gap:14px;align-items:center;margin-bottom:24px}.search{width:min(520px,48vw);position:relative}.search input{width:100%;background:#111424;border:1px solid var(--line);border-radius:10px;padding:12px 60px 12px 16px;color:#fff;outline:none}.search kbd{position:absolute;right:10px;top:10px;color:#81869e;border:1px solid #30354d;border-radius:5px;padding:2px 5px;font-size:10px}.user{margin-left:auto;color:#b3b7ca;font-size:13px}.quick{display:flex;gap:6px}.quick a,.top button{color:#c7cad8;background:#111424;border:1px solid var(--line);padding:9px 11px;border-radius:9px;font-size:12px;text-decoration:none;cursor:pointer}.quick a.active{border-color:#7352c6;color:#fff}.drive-hero{background:linear-gradient(125deg,#15182b,#101323);border:1px solid var(--line);box-shadow:0 0 30px rgba(79,70,229,.08);border-radius:17px;padding:25px}.hero-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.drive-title{display:flex;gap:14px;align-items:center}.drive-mark{font-size:37px}.drive-title h1{font-size:25px}.drive-title p{font-size:13px;color:var(--muted);margin-top:5px}.connection{display:flex;align-items:center;gap:10px}.status-pill{color:#a7f3d0;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:100px;padding:9px 13px;font-size:12px}.status-dot{width:8px;height:8px;display:inline-block;border-radius:50%;background:var(--red);margin-right:7px}.status-dot.on{background:var(--green);box-shadow:0 0 10px var(--green)}.btn{border:0;border-radius:9px;padding:10px 14px;background:linear-gradient(135deg,#7c3aed,#6035c9);color:#fff;font-weight:650;cursor:pointer;white-space:nowrap}.btn:disabled{opacity:.5;cursor:not-allowed}.btn.ghost{background:transparent;border:1px solid #8855ea;color:#cfb9ff}.browser{margin-top:30px}.browser h2{font-size:16px;margin-bottom:13px}.breadcrumb{font-size:13px;color:#aeb3c9;margin-bottom:12px}.breadcrumb a{color:#be9cff;cursor:pointer}.breadcrumb .sep{padding:0 6px;color:#68708c}.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}.toolbar select{flex:1;min-width:150px;background:#101426;border:1px solid #353854;color:#d9dbea;border-radius:9px;padding:12px}.folder-list{height:min(58vh,540px);overflow:auto;border:1px solid #33364f;background:#0e1120;border-radius:12px}.folder-list::-webkit-scrollbar{width:9px}.folder-list::-webkit-scrollbar-thumb{background:#7141d6;border-radius:10px}.list-head{font-size:11px;color:#8f94ab;font-weight:800;letter-spacing:.1em;padding:14px 18px;border-bottom:1px solid var(--line)}.row{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid rgba(59,63,91,.55);cursor:pointer;transition:.15s}.row:hover,.row.selected{background:#201d40;box-shadow:inset 2px 0 #8758e9}.row:last-child{border-bottom:0}.row .check{accent-color:#8b5cf6;width:16px;height:16px}.row .ficon{font-size:20px}.row .fname{flex:1;font-size:14px}.row .fmeta{font-size:12px;color:var(--muted)}.row[data-folder=true] .fname:after{content:'›';float:right;font-size:22px;color:#a8a1bf;line-height:12px}.empty{text-align:center;padding:60px 20px;color:var(--muted)}.progress-panel{display:none;margin-top:15px;border:1px solid var(--line);border-radius:12px;padding:15px}.progress-panel.show{display:block}.pitem{display:flex;gap:8px;padding:5px}.pname{flex:1}.pstatus.ok{color:var(--green)}.pstatus.err{color:var(--red)}.help,.back{display:none}@media(max-width:900px){.app-sidebar{width:64px;padding:18px 8px}.brand span,.nav span,.section-label,.storage-card,.theme,.service-nav span{display:none}.brand{padding:0;justify-content:center}.nav a{text-align:center;justify-content:center}.main{margin-left:64px;width:calc(100% - 64px);padding:14px}.top{flex-wrap:wrap;height:auto}.search{width:100%}.user,.quick{display:none}.hero-head,.toolbar{align-items:stretch;flex-direction:column}.connection{justify-content:space-between}.folder-list{height:55vh}}
+</style></head>
+<body><div class="layout"><aside class="app-sidebar"><div class="brand"><b class="cloud-logo">☁</b><span>Cloud Storage</span></div><nav class="nav"><a href="/drive">▦ <span>Dashboard</span></a><a href="/drive" onclick="sessionStorage.setItem('cloudNav','recent')">◷ <span>Recent</span></a><a href="/drive" onclick="sessionStorage.setItem('cloudNav','favorites')">☆ <span>Favorites</span></a><a href="/drive" onclick="sessionStorage.setItem('cloudNav','shared')">♧ <span>Shared with me</span></a><a href="/drive" onclick="sessionStorage.setItem('cloudNav','trash')">♲ <span>Trash</span></a></nav><div class="section-label">STORAGE</div><a class="nav" href="/drive" style="text-decoration:none"><span class="nav a">☁ <span>Storage</span></span></a><div class="storage-card"><span class="infinity">∞</span><div><b>Unlimited Storage</b><small>Penyimpanan Tanpa Batas</small></div></div><div class="theme"><span>Dark Mode</span><span class="switch"><i></i></span></div><div class="service-nav"><a class="active" href="/gdrive">△ <span>Google Drive</span></a><a href="/photos">✿ <span>Google Photos</span></a><a href="#" onclick="doLogout()">↪ <span>Logout</span></a></div></aside><main class="main"><header class="top"><div class="search">⌕ <input id="searchInput" placeholder="Cari file atau folder..." oninput="filterItems()"><kbd>Ctrl /</kbd></div><span class="user" id="userEmail"></span><div class="quick"><a href="/profile">♙ Profile</a><a class="active" href="/gdrive">△ Google Drive</a><a href="/photos">✿ Google Photos</a></div><button onclick="doLogout()">↪ Logout</button></header><section class="drive-hero"><div class="hero-head"><div class="drive-title"><span class="drive-mark">△</span><div><h1>Google Drive</h1><p>Kelola, sinkronkan dan akses file Anda dengan mudah.</p></div></div><div class="connection"><span class="status-pill"><i class="status-dot" id="statusDot"></i><span id="statusText">Memeriksa koneksi...</span></span><button class="btn ghost" id="connectBtn" style="display:none" onclick="connectDrive()">Hubungkan</button><button class="btn ghost" id="disconnectBtn" style="display:none" onclick="disconnectDrive()">Putuskan</button></div></div><div id="browserSection" class="browser" style="display:none"><h2>My Drive</h2><div class="breadcrumb" id="breadcrumb"></div><div class="toolbar"><select id="folderSelect" onchange="goSelectedFolder()"></select><button class="btn" id="syncBtn" onclick="syncDrive()">⟳ Sinkron Otomatis</button><button class="btn ghost" id="copyBtn" onclick="copySelected()" disabled>➤ Copy ke Telegram (<span id="selCount">0</span>)</button><button class="btn ghost" id="pauseBtn" onclick="pauseSync()" style="display:none">⏸ Pause</button><button class="btn ghost" id="resumeBtn" onclick="resumeSync()" style="display:none">▶ Lanjut</button><button class="btn ghost" id="cancelBtn" onclick="cancelSync()" style="display:none">✕ Batal</button><button class="btn ghost" id="retryBtn" onclick="retrySync()" style="display:none">⟳ Retry Gagal</button></div><div id="syncStatus" style="display:none;margin-bottom:12px"></div><div class="folder-list"><div class="list-head">NAMA FOLDER</div><div id="fileList"></div></div><div class="progress-panel" id="progressPanel"><h3>Copy Progress</h3><div id="progressList"></div></div></div><div class="empty" id="notConnected" style="display:none"><p>Google Drive belum terhubung.</p><p style="margin-top:8px">Klik tombol Hubungkan untuk memulai.</p></div></section></main></div><script>
 const api=(u,o)=>fetch(u,{credentials:'same-origin',...o}).then(r=>r.json());
 let currentFolder='root';
 let folderStack=[{id:'root',name:'My Drive'}];
@@ -1616,9 +1519,7 @@ setTimeout(async()=>{
 
 async function doLogout(){await api('/api/logout',{method:'POST'});location.href='/';}
 init();
-</script>
-</body>
-</html>'''
+</script></body></html>'''
 
 PHOTOS_HTML = '''<!DOCTYPE html>
 <html lang="id">
