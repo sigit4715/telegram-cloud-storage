@@ -1,0 +1,33 @@
+# Sensitive config
+config.env
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Fix scripts (temporary)
+fix_*.py
+fix_*.py.*
+
+# Database (contains user data)
+storage.db
+storage.db-journal
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram Cloud Storage Web Dashboard
+After=network.target telegram-cloud.service
+Requires=telegram-cloud.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/data/telegram-cloud
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/data/.venv-scrapling/bin/python3 /opt/data/telegram-cloud/web.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
