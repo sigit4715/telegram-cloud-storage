@@ -987,7 +987,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 .gd-btn-copy{background:rgba(59,130,246,.12);color:#93c5fd;border:1px solid rgba(59,130,246,.4)}
 .gd-btn-copy:not(:disabled):hover{background:rgba(59,130,246,.22);color:#bfdbfe;border-color:#3b82f6}
 .gd-btn-copy:disabled{opacity:.45;cursor:not-allowed;border-color:var(--border);color:var(--muted);background:rgba(255,255,255,.03)}
-.gd-browser{margin-top:26px}.gd-browser h2{font-size:1rem;margin-bottom:12px}.gd-breadcrumb{color:var(--muted);font-size:.82rem;margin-bottom:11px}.gd-breadcrumb a{color:var(--accent2);cursor:pointer}.gd-breadcrumb .sep{margin:0 6px}.gd-toolbar{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}.gd-toolbar select{flex:1;min-width:190px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px}.gd-list{height:min(61vh,540px);overflow-y:auto;border:1px solid var(--border);border-radius:11px;background:var(--bg2)}.gd-list::-webkit-scrollbar{width:9px}.gd-list::-webkit-scrollbar-thumb{background:var(--accent);border-radius:8px}.gd-list-head{padding:13px 16px;border-bottom:1px solid var(--border);font-weight:700;font-size:.68rem;letter-spacing:.08em;color:var(--muted)}.gd-row{display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid rgba(139,92,246,.13);cursor:pointer}.gd-row:hover,.gd-row.selected{background:rgba(139,92,246,.14)}.gd-row .gd-check{accent-color:var(--accent);width:16px;height:16px}.gd-row .gd-name{flex:1;font-size:.87rem}.gd-row .gd-meta{font-size:.74rem;color:var(--muted)}.gd-row[data-folder="true"] .gd-name:after{content:'›';float:right;color:var(--accent2);font-size:1.35rem;line-height:.7rem}.gd-empty{text-align:center;padding:55px 20px;color:var(--muted)}.gd-progress{display:none;margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px}.gd-progress.show{display:block}.gd-progress-item{display:flex;gap:10px;padding:5px 0;font-size:.8rem}.gd-progress-name{flex:1}.gd-ok{color:var(--green)}.gd-err{color:var(--red)}@media(max-width:768px){.gd-head{align-items:stretch;flex-direction:column}.gd-connection{justify-content:space-between}.gdrive-hero{padding:15px}.gd-list{height:55vh}}
+.gd-browser{margin-top:26px}.gd-browser h2{font-size:1rem;margin-bottom:12px}.gd-breadcrumb{color:var(--muted);font-size:.82rem;margin-bottom:11px}.gd-breadcrumb a{color:var(--accent2);cursor:pointer}.gd-breadcrumb .sep{margin:0 6px}.gd-toolbar{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}.gd-toolbar select{flex:1;min-width:190px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px}.gd-list{height:min(61vh,540px);overflow-y:auto;border:1px solid var(--border);border-radius:11px;background:var(--bg2)}.gd-list::-webkit-scrollbar{width:9px}.gd-list::-webkit-scrollbar-thumb{background:var(--accent);border-radius:8px}.gd-list-head{padding:13px 16px;border-bottom:1px solid var(--border);font-weight:700;font-size:.68rem;letter-spacing:.08em;color:var(--muted)}.gd-row{display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid rgba(139,92,246,.13);cursor:pointer}.gd-row:hover,.gd-row.selected{background:rgba(139,92,246,.14)}.gd-row .gd-check{accent-color:var(--accent);width:16px;height:16px}.gd-row .gd-name{flex:1;font-size:.87rem}.gd-row .gd-meta{font-size:.74rem;color:var(--muted)}.gd-row[data-folder="true"] .gd-name:after{content:'›';float:right;color:var(--accent2);font-size:1.35rem;line-height:.7rem}.gd-empty{text-align:center;padding:55px 20px;color:var(--muted)}.gd-sync-progress{margin:0 0 14px;padding:14px 16px;border:1px solid rgba(139,92,246,.4);border-radius:12px;background:linear-gradient(135deg,rgba(139,92,246,.12),rgba(59,130,246,.06));box-shadow:0 8px 24px rgba(0,0,0,.14)}.gd-sync-progress-head,.gd-sync-meta{display:flex;justify-content:space-between;gap:12px;align-items:center}.gd-sync-progress-head{font-size:.82rem;color:var(--text)}.gd-sync-progress-head span{color:#c4b5fd;font-weight:700}.gd-sync-track{height:10px;margin:10px 0 8px;border-radius:999px;overflow:hidden;background:rgba(0,0,0,.35);border:1px solid rgba(139,92,246,.25)}.gd-sync-track i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7c3aed,#a855f7,#60a5fa);box-shadow:0 0 14px rgba(168,85,247,.6);transition:width .35s ease}.gd-sync-track i.indeterminate{width:35%!important;animation:gdSyncMove 1.1s ease-in-out infinite}.gd-sync-meta{font-size:.72rem;color:var(--muted)}.gd-sync-current{margin-top:6px;font-size:.7rem;color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}@keyframes gdSyncMove{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}.gd-progress{display:none;margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px}.gd-progress.show{display:block}.gd-progress-item{display:flex;gap:10px;padding:5px 0;font-size:.8rem}.gd-progress-name{flex:1}.gd-ok{color:var(--green)}.gd-err{color:var(--red)}@media(max-width:768px){.gd-head{align-items:stretch;flex-direction:column}.gd-connection{justify-content:space-between}.gdrive-hero{padding:15px}.gd-list{height:55vh}}
 </style>
 </head>
 <body>
@@ -1115,6 +1115,12 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
         <h2>My Drive</h2><div class="gd-breadcrumb" id="gdBreadcrumb"></div>
         <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="gd-btn gd-btn-sync" id="gdSyncBtn" onclick="gdSyncDrive()">↻&nbsp; Sinkron Otomatis</button><button class="gd-btn gd-btn-copy" id="gdCopyBtn" onclick="gdCopySelected()" disabled>➤&nbsp; Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
         <div id="gdSyncStatus" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--border);border-radius:8px"></div>
+        <div class="gd-sync-progress" id="gdSyncProgress" style="display:none">
+          <div class="gd-sync-progress-head"><strong>Sinkronisasi Google Drive</strong><span id="gdSyncProgressText">0%</span></div>
+          <div class="gd-sync-track"><i id="gdSyncProgressBar"></i></div>
+          <div class="gd-sync-meta"><span id="gdSyncProgressMessage">Menyiapkan...</span><span id="gdSyncProgressCount">0 / 0 file</span></div>
+          <div class="gd-sync-current" id="gdSyncCurrent"></div>
+        </div>
         <div class="gd-list"><div class="gd-list-head">NAMA FOLDER / FILE</div><div id="gdFileList"></div></div>
         <div class="gd-progress" id="gdProgress"><strong>Copy Progress</strong><div id="gdProgressList"></div></div>
       </div>
@@ -1244,7 +1250,34 @@ function gdEnterFolder(id){var f=gdItems.find(function(x){return x.id===id&&x.is
 function gdRenderList(items){var el=document.getElementById('gdFileList');if(!items.length){el.innerHTML='<div class="gd-empty">Folder kosong</div>';return;}el.innerHTML=items.map(function(it){var icon=it.is_folder?'📁':it.is_google_doc?'📝':(it.mimeType||'').startsWith('image/')?'🖼️':(it.mimeType||'').startsWith('video/')?'🎬':'📄';var cb=it.is_folder?'':'<input class="gd-check" type="checkbox" data-id="'+it.id+'">';return '<div class="gd-row" data-id="'+it.id+'" data-folder="'+it.is_folder+'">'+cb+'<span class="gd-ficon">'+icon+'</span><span class="gd-name">'+escHtml(it.name)+'</span><span class="gd-meta">'+(it.size_human||'')+'</span></div>';}).join('');el.querySelectorAll('.gd-row').forEach(function(row){row.onclick=function(e){if(e.target.classList.contains('gd-check')){var id=row.dataset.id;if(e.target.checked)gdSelected.add(id);else gdSelected.delete(id);row.classList.toggle('selected',e.target.checked);gdUpdateCount();}else if(row.dataset.folder==='true')gdEnterFolder(row.dataset.id);};});}
 function gdUpdateCount(){document.getElementById('gdSelCount').textContent=gdSelected.size;document.getElementById('gdCopyBtn').disabled=!gdSelected.size;}
 function gdCopySelected(){var ids=[...gdSelected];if(!ids.length)return;api('/api/gdrive/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:ids,folder_id:0})}).then(function(d){alert((d.results||[]).filter(function(x){return x.ok;}).length+' file berhasil dicopy ke Telegram');});}
-function gdSyncDrive(){if(!confirm('Upload file dari Google Drive ke Telegram?'))return;var st=document.getElementById('gdSyncStatus');st.style.display='block';st.textContent='Memulai sinkronisasi...';api('/api/gdrive/sync?t='+Date.now()).then(function(d){st.textContent=d.error||'Sinkronisasi dimulai. Pantau halaman Google Drive untuk progres.';});}
+var gdSyncTimer=null;
+function gdRenderSyncProgress(d){
+  var panel=document.getElementById('gdSyncProgress'),bar=document.getElementById('gdSyncProgressBar');
+  var pct=Math.max(0,Math.min(100,Number(d.percent)||0));
+  panel.style.display='block';
+  document.getElementById('gdSyncProgressText').textContent=pct+'%';
+  document.getElementById('gdSyncProgressMessage').textContent=d.message||'Sinkronisasi berjalan...';
+  document.getElementById('gdSyncProgressCount').textContent=(d.done||0)+' / '+(d.total||0)+' file';
+  document.getElementById('gdSyncCurrent').textContent=d.current?('Sedang diproses: '+d.current):'';
+  if(d.running&&!(d.total>0)){bar.classList.add('indeterminate');bar.style.width='35%';}
+  else{bar.classList.remove('indeterminate');bar.style.width=pct+'%';}
+  document.getElementById('gdSyncBtn').disabled=!!d.running;
+  if(!d.running&&gdSyncTimer){clearInterval(gdSyncTimer);gdSyncTimer=null;}
+}
+function gdPollSync(){api('/api/gdrive/sync/status?t='+Date.now()).then(function(d){if(!d||d.error)return;gdRenderSyncProgress(d);});}
+function gdStartSyncPolling(){if(gdSyncTimer)clearInterval(gdSyncTimer);gdPollSync();gdSyncTimer=setInterval(gdPollSync,1000);}
+function gdSyncDrive(){
+  if(!confirm('Upload file dari Google Drive ke Telegram?'))return;
+  var st=document.getElementById('gdSyncStatus'),panel=document.getElementById('gdSyncProgress'),bar=document.getElementById('gdSyncProgressBar');
+  st.style.display='none';panel.style.display='block';bar.classList.add('indeterminate');bar.style.width='35%';
+  document.getElementById('gdSyncProgressText').textContent='0%';
+  document.getElementById('gdSyncProgressMessage').textContent='Memulai sinkronisasi...';
+  document.getElementById('gdSyncProgressCount').textContent='0 / 0 file';
+  api('/api/gdrive/sync?t='+Date.now()).then(function(d){
+    if(d.error){bar.classList.remove('indeterminate');panel.style.display='none';st.style.display='block';st.textContent=d.error;return;}
+    gdStartSyncPolling();
+  });
+}
 function init(){
   api('/api/me').then(function(me){
     if(!me||!me.logged_in){location.href='/';return;}
