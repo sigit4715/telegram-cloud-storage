@@ -161,6 +161,15 @@ def init_drive_db():
         code_verifier TEXT,
         created_at INTEGER NOT NULL
     )""")
+    db_exec("""CREATE TABLE IF NOT EXISTS sync_errors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        drive_file_id TEXT UNIQUE NOT NULL,
+        file_name TEXT NOT NULL,
+        error_msg TEXT,
+        folder_id INTEGER NOT NULL DEFAULT 0,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )""")
     db_exec("DELETE FROM google_oauth_states WHERE created_at < ?", (int(_time.time()) - 900,))
 
 # ----------------------------------------------------------------------------
@@ -642,8 +651,10 @@ def gdrive_sync_status():
     pct = 0
     if _sync_state["total"] > 0:
         pct = int((_sync_state["done"] * 100) / _sync_state["total"])
+    storage_total = db_scalar("SELECT COUNT(*) FROM files") or 0
     return jsonify({
         "running": _sync_state["running"],
+        "storage_total": storage_total,
         "total": _sync_state["total"],
         "done": _sync_state["done"],
         "imported": _sync_state["imported"],
@@ -948,13 +959,9 @@ def _do_retry(uid, errors):
             _sync_state["running"] = False
             return
 
-        target = CHANNEL
-        try:
-            from web import CHANNEL as _cfg_ch
-            if _cfg_ch and str(_cfg_ch) not in ("", "me", "__AUTO_CREATE__"):
-                target = _cfg_ch
-        except Exception:
-            pass
+        target = int(CHANNEL)
+        if target > 0:
+            target = -int("100" + str(target))
 
         # Reuse existing telethon_client + run_async from web.py
         client = globals().get("telethon_client")
@@ -965,9 +972,12 @@ def _do_retry(uid, errors):
             return
         print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
 
-        missing = errors  # errors list has same shape: [{drive_file_id, file_name, folder_id}]
-        folder_by_id = {}
-        _get_db_folder = lambda x: 3
+        # Normalize persisted failed rows into the same shape used by the sync loop.
+        missing = [{
+            "id": (r["drive_file_id"] if hasattr(r, "keys") else r[0]),
+            "name": (r["file_name"] if hasattr(r, "keys") else r[1]),
+            "folder_id": (r["folder_id"] if hasattr(r, "keys") else r[2]),
+        } for r in errors]
 
         for i, f in enumerate(missing):
                 # --- Pause / Cancel controls ---
@@ -988,15 +998,8 @@ def _do_retry(uid, errors):
                     _sync_state["updated_at"] = _time.time()
                     print("[SYNC] Processing %d/%d: %s" % (i+1, len(missing), name), file=sys.stderr, flush=True)
 
-                    # Resolve DB folder_id for this file from its Drive parent
-                    folder_id = 3  # Default Backup email folder
-                    pr = f.get("parents") or []
-                    if pr and pr[0] in folder_by_id:
-                        try:
-                            folder_id = _get_db_folder(pr[0])
-                        except Exception as fe:
-                            print("[SYNC] folder resolve failed for %s: %s" % (name, fe), file=sys.stderr, flush=True)
-                            folder_id = 0
+                    # Retry into the same Cloud Storage folder recorded on failure.
+                    folder_id = int(f.get("folder_id") or 0)
 
                     # Google Docs/Sheets/Slides need export, not download
                     mime = f.get("mimeType", "")
@@ -1040,6 +1043,7 @@ def _do_retry(uid, errors):
                     _sync_state["done"] = i + 1
                     _sync_state["updated_at"] = _time.time()
                     _sync_state["files"].append({"name": name, "ok": True})
+                    db_exec("DELETE FROM sync_errors WHERE drive_file_id=?", (f.get("id", ""),))
                     print("[SYNC] Uploaded %s -> folder_id=%s (%d/%d)" % (name, folder_id, i+1, len(missing)), file=sys.stderr, flush=True)
 
                 except Exception as e:
