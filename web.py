@@ -1249,7 +1249,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
       </div>
       <div class="gd-browser" id="gdBrowser" style="display:none">
         <h2>My Drive</h2><div class="gd-breadcrumb" id="gdBreadcrumb"></div>
-        <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="gd-btn gd-btn-sync" id="gdSyncBtn" onclick="gdSyncDrive()">&#x21BB;&nbsp; Sinkron Otomatis</button><button class="gd-btn gd-btn-copy" id="gdCopyBtn" onclick="gdCopySelected()" disabled>➤&nbsp; Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
+        <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="gd-btn gd-btn-sync" id="gdSyncBtn" onclick="gdSyncDrive()">&#x21BB;&nbsp; Sinkron Otomatis</button><button class="gd-btn gd-btn-copy" id="gdCopyBtn" onclick="gdCopySelected()" disabled>&#10148;&nbsp; Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
         <div id="gdSyncStatus" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--border);border-radius:8px"></div>
         <div class="gd-sync-progress" id="gdSyncProgress" style="display:none">
           <div class="gd-sync-progress-head"><strong>Sinkronisasi Google Drive</strong><span class="gd-sync-actions"><span id="gdSyncProgressText">0%</span><button type="button" class="gd-sync-cancel" id="gdSyncCancelBtn" onclick="gdCancelSync()">Batal</button></span></div>
@@ -1257,7 +1257,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
           <div class="gd-sync-meta"><span id="gdSyncProgressMessage">Menyiapkan...</span><span id="gdSyncProgressCount">0 / 0 file</span></div>
           <div class="gd-sync-current" id="gdSyncCurrent"></div>
           <div class="gd-sync-result" id="gdSyncResult" style="display:none">
-            <span class="gd-result-success">✓ Berhasil: <b id="gdSyncSuccessCount">0</b></span>
+            <span class="gd-result-success">&#10003; Berhasil: <b id="gdSyncSuccessCount">0</b></span>
             <span class="gd-result-failed">&#x2715; Gagal: <b id="gdSyncErrorCount">0</b></span>
             <button type="button" class="gd-retry-btn" id="gdRetryFailedBtn" onclick="gdRetryFailed()" style="display:none">&#x21BB; Retry file gagal</button>
           </div>
@@ -1817,7 +1817,7 @@ function createFolder(){var n=document.getElementById('newFolderName').value.tri
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 
 // Select
-function toggleSelectMode(){selectMode=!selectMode;selectedIds.clear();document.getElementById('selectedBar').classList.toggle('show',selectMode);document.getElementById('selectBtn').textContent=selectMode?'Cancel':'\u2611 Select';updateSelectedCount();}
+function toggleSelectMode(){selectMode=!selectMode;selectedIds.clear();document.getElementById('selectedBar').classList.toggle('show',selectMode);document.getElementById('selectBtn').textContent=selectMode?'Cancel':'Select';updateSelectedCount();}
 function updateSelectedCount(){document.getElementById('selectedCount').textContent=selectedIds.size+' dipilih';}
 function deleteSelected(){if(!selectedIds.size)return;if(!confirm('Hapus '+selectedIds.size+' file?'))return;var p=[];selectedIds.forEach(function(id){p.push(api('/api/delete/'+id,{method:'DELETE'}));});Promise.all(p).then(function(){selectedIds.clear();loadAll();updateSelectedCount();});}
 
@@ -1849,7 +1849,7 @@ function openFilePreview(id,name,mime){
   else if(text){body='<pre class="preview-text preview-loading">Memuat isi file...</pre>';}
   else body='<div class="preview-fallback">Format ini belum mendukung preview.<br><a class="preview-download" href="/api/download/'+id+'">Download file</a></div>';
   el.innerHTML=previewShell(id,name,body);document.getElementById('filePreview').classList.add('show');
-  if(text)fetch('/api/stream/'+id).then(function(r){if(!r.ok)throw Error('HTTP '+r.status);return r.text();}).then(function(t){var p=el.querySelector('.preview-text');if(p){p.classList.remove('preview-loading');p.textContent=t.slice(0,200000)+(t.length>200000?'\n\n[Preview dibatasi 200.000 karakter]':'');}}).catch(function(e){var p=el.querySelector('.preview-text');if(p)p.textContent='Preview gagal: '+e.message;});
+  if(text)fetch('/api/stream/'+id).then(function(r){if(!r.ok)throw Error('HTTP '+r.status);return r.text();}).then(function(t){var p=el.querySelector('.preview-text');if(p){p.classList.remove('preview-loading');p.textContent=t.slice(0,200000)+(t.length>200000?'\\n\\n[Preview dibatasi 200.000 karakter]':'');}}).catch(function(e){var p=el.querySelector('.preview-text');if(p)p.textContent='Preview gagal: '+e.message;});
 }
 function openRecentFile(id,folderId){currentFolder=folderId;openFile(id);}
 function openFile(id){
