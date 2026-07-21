@@ -1249,7 +1249,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
       </div>
       <div class="gd-browser" id="gdBrowser" style="display:none">
         <h2>My Drive</h2><div class="gd-breadcrumb" id="gdBreadcrumb"></div>
-        <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="gd-btn gd-btn-sync" id="gdSyncBtn" onclick="gdSyncDrive()">↻&nbsp; Sinkron Otomatis</button><button class="gd-btn gd-btn-copy" id="gdCopyBtn" onclick="gdCopySelected()" disabled>➤&nbsp; Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
+        <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="gd-btn gd-btn-sync" id="gdSyncBtn" onclick="gdSyncDrive()">&#x21BB;&nbsp; Sinkron Otomatis</button><button class="gd-btn gd-btn-copy" id="gdCopyBtn" onclick="gdCopySelected()" disabled>➤&nbsp; Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
         <div id="gdSyncStatus" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--border);border-radius:8px"></div>
         <div class="gd-sync-progress" id="gdSyncProgress" style="display:none">
           <div class="gd-sync-progress-head"><strong>Sinkronisasi Google Drive</strong><span class="gd-sync-actions"><span id="gdSyncProgressText">0%</span><button type="button" class="gd-sync-cancel" id="gdSyncCancelBtn" onclick="gdCancelSync()">Batal</button></span></div>
@@ -1258,8 +1258,8 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
           <div class="gd-sync-current" id="gdSyncCurrent"></div>
           <div class="gd-sync-result" id="gdSyncResult" style="display:none">
             <span class="gd-result-success">✓ Berhasil: <b id="gdSyncSuccessCount">0</b></span>
-            <span class="gd-result-failed">✕ Gagal: <b id="gdSyncErrorCount">0</b></span>
-            <button type="button" class="gd-retry-btn" id="gdRetryFailedBtn" onclick="gdRetryFailed()" style="display:none">↻ Retry file gagal</button>
+            <span class="gd-result-failed">&#x2715; Gagal: <b id="gdSyncErrorCount">0</b></span>
+            <button type="button" class="gd-retry-btn" id="gdRetryFailedBtn" onclick="gdRetryFailed()" style="display:none">&#x21BB; Retry file gagal</button>
           </div>
           <div class="gd-sync-failures" id="gdSyncFailures" style="display:none"></div>
         </div>
@@ -1427,11 +1427,11 @@ function gdCheckStatus(){
 function gdDisconnect(){if(confirm('Putuskan koneksi Google Drive?'))api('/api/gdrive/disconnect',{method:'POST'}).then(gdCheckStatus);}
 function gdLoadFiles(folderId){gdFolder=folderId;gdSelected.clear();gdUpdateCount();api('/api/gdrive/files?folder_id='+encodeURIComponent(folderId)).then(function(d){if(d.error){alert(d.error);return;}gdItems=(d.folders||[]).concat(d.files||[]);gdRenderBreadcrumb();gdRenderSelect(d.folders||[]);gdRenderList(gdItems);});}
 function gdRenderBreadcrumb(){var h='';gdStack.forEach(function(f,i){if(i)h+='<span class="sep">/</span>';h+=i===gdStack.length-1?'<span>'+escHtml(f.name)+'</span>':'<a onclick="gdNavTo('+i+')">'+escHtml(f.name)+'</a>';});document.getElementById('gdBreadcrumb').innerHTML=h;}
-function gdRenderSelect(fs){document.getElementById('gdFolderSelect').innerHTML='<option value="">Masuk ke folder...</option>'+fs.map(function(f){return '<option value="'+f.id+'">📁 '+escHtml(f.name)+'</option>';}).join('');}
+function gdRenderSelect(fs){document.getElementById('gdFolderSelect').innerHTML='<option value="">Masuk ke folder...</option>'+fs.map(function(f){return '<option value="'+f.id+'">[Folder] '+escHtml(f.name)+'</option>';}).join('');}
 function gdGoSelectedFolder(){var v=document.getElementById('gdFolderSelect').value;if(v)gdEnterFolder(v);}
 function gdNavTo(i){gdStack=gdStack.slice(0,i+1);gdLoadFiles(gdStack[i].id);}
 function gdEnterFolder(id){var f=gdItems.find(function(x){return x.id===id&&x.is_folder;});if(f){gdStack.push({id:id,name:f.name});gdLoadFiles(id);}}
-function gdRenderList(items){var el=document.getElementById('gdFileList');if(!items.length){el.innerHTML='<div class="gd-empty">Folder kosong</div>';return;}el.innerHTML=items.map(function(it){var icon=it.is_folder?'📁':it.is_google_doc?'📝':(it.mimeType||'').startsWith('image/')?'🖼️':(it.mimeType||'').startsWith('video/')?'🎬':'📄';var cb=it.is_folder?'':'<input class="gd-check" type="checkbox" data-id="'+it.id+'">';return '<div class="gd-row" data-id="'+it.id+'" data-folder="'+it.is_folder+'">'+cb+'<span class="gd-ficon">'+icon+'</span><span class="gd-name">'+escHtml(it.name)+'</span><span class="gd-meta">'+(it.size_human||'')+'</span></div>';}).join('');el.querySelectorAll('.gd-row').forEach(function(row){row.onclick=function(e){if(e.target.classList.contains('gd-check')){var id=row.dataset.id;if(e.target.checked)gdSelected.add(id);else gdSelected.delete(id);row.classList.toggle('selected',e.target.checked);gdUpdateCount();}else if(row.dataset.folder==='true')gdEnterFolder(row.dataset.id);};});}
+function gdRenderList(items){var el=document.getElementById('gdFileList');if(!items.length){el.innerHTML='<div class="gd-empty">Folder kosong</div>';return;}el.innerHTML=items.map(function(it){var icon=it.is_folder?'&#128193;':it.is_google_doc?'&#128221;':(it.mimeType||'').startsWith('image/')?'&#128444;':(it.mimeType||'').startsWith('video/')?'&#127916;':'&#128196;';var cb=it.is_folder?'':'<input class="gd-check" type="checkbox" data-id="'+it.id+'">';return '<div class="gd-row" data-id="'+it.id+'" data-folder="'+it.is_folder+'">'+cb+'<span class="gd-ficon">'+icon+'</span><span class="gd-name">'+escHtml(it.name)+'</span><span class="gd-meta">'+(it.size_human||'')+'</span></div>';}).join('');el.querySelectorAll('.gd-row').forEach(function(row){row.onclick=function(e){if(e.target.classList.contains('gd-check')){var id=row.dataset.id;if(e.target.checked)gdSelected.add(id);else gdSelected.delete(id);row.classList.toggle('selected',e.target.checked);gdUpdateCount();}else if(row.dataset.folder==='true')gdEnterFolder(row.dataset.id);};});}
 function gdUpdateCount(){document.getElementById('gdSelCount').textContent=gdSelected.size;document.getElementById('gdCopyBtn').disabled=!gdSelected.size;}
 function gdCopySelected(){var ids=[...gdSelected];if(!ids.length)return;api('/api/gdrive/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:ids,folder_id:0})}).then(function(d){alert((d.results||[]).filter(function(x){return x.ok;}).length+' file berhasil dicopy ke Telegram');});}
 var gdSyncTimer=null;
@@ -1449,7 +1449,7 @@ function gdRenderSyncProgress(d){
   document.getElementById('gdSyncErrorCount').textContent=failed;
   document.getElementById('gdRetryFailedBtn').style.display=(!d.running&&failed>0)?'inline-flex':'none';
   var failures=document.getElementById('gdSyncFailures'),errs=d.errors||[];
-  if(errs.length){failures.style.display='block';failures.innerHTML=errs.map(function(e){return '<div>✕ '+escHtml(String(e))+'</div>';}).join('');}
+  if(errs.length){failures.style.display='block';failures.innerHTML=errs.map(function(e){return '<div>&#x2715; '+escHtml(String(e))+'</div>';}).join('');}
   else{failures.style.display='none';failures.innerHTML='';}
   if(d.storage_total!==undefined){var fileStat=document.querySelector('.stat[data-view="files"] .num');if(fileStat)fileStat.textContent=d.storage_total;}
   if(!d.running&&d.done>0)loadStats();
@@ -1466,7 +1466,7 @@ function gdRetryFailed(){
   var btn=document.getElementById('gdRetryFailedBtn');
   btn.disabled=true;btn.textContent='Memulai retry...';
   api('/api/gdrive/sync/retry?t='+Date.now()).then(function(d){
-    btn.disabled=false;btn.textContent='↻ Retry file gagal';
+    btn.disabled=false;btn.textContent='&#x21BB; Retry file gagal';
     if(!d||d.error||d.ok===false){alert((d&&(d.error||d.message))||'Tidak dapat retry');return;}
     gdStartSyncPolling();
   });
