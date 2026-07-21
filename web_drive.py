@@ -2114,7 +2114,7 @@ def _photos_callback_handler(uid):
     db_exec("INSERT INTO google_tokens (user_id, access_token, refresh_token, token_expiry) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET access_token=excluded.access_token, refresh_token=COALESCE(excluded.refresh_token, google_tokens.refresh_token), token_expiry=excluded.token_expiry", (uid, creds.token, creds.refresh_token, expiry))
     session.pop("photos_state", None)
     session.pop("photos_uid", None)
-    return redirect(url_for("drive_ext.photos_page"))
+    return redirect("/drive#gphotos")
 
 @drive_ext.route("/api/photos/picker/create", methods=["POST"])
 def photos_picker_create():

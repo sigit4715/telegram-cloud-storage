@@ -785,7 +785,7 @@ a{color:var(--accent2);text-decoration:none}
 .nav-item:hover,.nav-item.active{background:rgba(139,92,246,.15);color:var(--accent2)}
 .nav-item.active{background:var(--accent);color:#fff;font-weight:600}
 .nav-item span{font-size:1.1rem;width:24px;text-align:center}
-.nav-divider{height:1px;background:var(--border);margin:12px 20px}
+.nav-divider{height:1px;background:var(--border);margin:12px 20px}.nav-provider-divider{margin:8px 12px}
 .storage-card-side{margin:0 16px;padding:16px;background:var(--bg3);border-radius:12px;border:1px solid var(--border);text-align:center}
 .storage-card-side .infinity{font-size:2rem;color:var(--accent)}
 .storage-card-side .label{font-size:.8rem;color:var(--muted);margin-top:4px}
@@ -974,7 +974,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 @media(max-width:1100px){.right-sidebar{display:none}.main-wrap{margin-right:0}}
 @media(max-width:768px){.sidebar{display:none}.main-wrap{margin-left:0}.stats{grid-template-columns:repeat(2,1fr)}}
 /* ===== EMBEDDED GOOGLE DRIVE ===== */
-.gdrive-panel{display:none}.gdrive-mode .stats,.gdrive-mode .breadcrumb,.gdrive-mode .toolbar,.gdrive-mode .drop-zone,.gdrive-mode .selected-bar,.gdrive-mode .folder-heading,.gdrive-mode .folder-grid,.gdrive-mode .files-panel{display:none}.gdrive-mode .gdrive-panel{display:block}.gdrive-mode .right-sidebar{display:none}.gdrive-mode .main-wrap{margin-right:0;max-width:none}.gdrive-hero{background:linear-gradient(135deg,rgba(38,27,79,.9),rgba(16,20,40,.96));border:1px solid var(--border);border-radius:16px;padding:25px;box-shadow:0 0 28px rgba(139,92,246,.12)}.gd-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.gd-title{display:flex;align-items:center;gap:13px}.gd-title .gd-logo{width:42px;height:42px}.gd-title h1{font-size:1.45rem}.gd-title p{font-size:.84rem;color:var(--muted);margin-top:5px}.gd-connection{display:flex;gap:10px;align-items:center}.gd-status{border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.09);color:#a7f3d0;border-radius:999px;padding:8px 14px;font-size:.78rem;display:inline-flex;align-items:center}.gd-status-dot{display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:8px}.gd-status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+.gdrive-panel,.gphotos-panel{display:none}.gdrive-mode .stats,.gdrive-mode .breadcrumb,.gdrive-mode .toolbar,.gdrive-mode .drop-zone,.gdrive-mode .selected-bar,.gdrive-mode .folder-heading,.gdrive-mode .folder-grid,.gdrive-mode .files-panel,.gphotos-mode .stats,.gphotos-mode .breadcrumb,.gphotos-mode .toolbar,.gphotos-mode .drop-zone,.gphotos-mode .selected-bar,.gphotos-mode .folder-heading,.gphotos-mode .folder-grid,.gphotos-mode .files-panel{display:none}.gdrive-mode .gdrive-panel,.gphotos-mode .gphotos-panel{display:block}.gdrive-mode .right-sidebar,.gphotos-mode .right-sidebar{display:none}.gdrive-mode .main-wrap,.gphotos-mode .main-wrap{margin-right:0;max-width:none}.gphotos-panel{height:calc(100vh - 115px);min-height:650px;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--bg2)}.gphotos-frame{display:block;width:100%;height:100%;border:0;background:var(--bg)}.gdrive-hero{background:linear-gradient(135deg,rgba(38,27,79,.9),rgba(16,20,40,.96));border:1px solid var(--border);border-radius:16px;padding:25px;box-shadow:0 0 28px rgba(139,92,246,.12)}.gd-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.gd-title{display:flex;align-items:center;gap:13px}.gd-title .gd-logo{width:42px;height:42px}.gd-title h1{font-size:1.45rem}.gd-title p{font-size:.84rem;color:var(--muted);margin-top:5px}.gd-connection{display:flex;gap:10px;align-items:center}.gd-status{border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.09);color:#a7f3d0;border-radius:999px;padding:8px 14px;font-size:.78rem;display:inline-flex;align-items:center}.gd-status-dot{display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:8px}.gd-status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
 .gd-btn{appearance:none;-webkit-appearance:none;border-radius:12px;padding:9px 16px;font-size:.82rem;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;transition:all .2s ease;outline:none;border:1px solid transparent}
 .gd-btn-connect{background:linear-gradient(135deg,#10b981,#059669);color:#fff;border-color:#10b981;box-shadow:0 6px 18px rgba(16,185,129,.25)}
 .gd-btn-connect:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(16,185,129,.35)}
@@ -996,6 +996,9 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
   <div class="sidebar-logo"><img class="cs-icon md" src="/icons/ui/cloud-storage.svg" alt=""> Cloud Storage</div>
   <div class="nav-section">
     <div class="nav-item active" data-nav="dashboard" onclick="openNav('dashboard',this)"><img class="cs-icon" src="/icons/ui/dashboard.svg" alt=""> Dashboard</div>
+    <div class="nav-item" data-nav="gdrive" onclick="openGDrivePanel(this)"><img class="cs-icon" src="/icons/ui/google-drive.svg" alt=""> Google Drive</div>
+    <div class="nav-item" data-nav="gphotos" onclick="openGPhotosPanel(this)"><img class="cs-icon" src="/icons/ui/google-photos.svg" alt=""> Google Photos</div>
+    <div class="nav-divider nav-provider-divider"></div>
     <div class="nav-item" data-nav="recent" onclick="openNav('recent',this)"><img class="cs-icon" src="/icons/ui/recent.svg" alt=""> Recent</div>
     <div class="nav-item" data-nav="favorites" onclick="openNav('favorites',this)"><img class="cs-icon" src="/icons/ui/favorites.svg" alt=""> Favorites</div>
     <div class="nav-item" data-nav="shared" onclick="openNav('shared',this)"><img class="cs-icon" src="/icons/ui/shared-with-me.svg" alt=""> Shared with me</div>
@@ -1023,8 +1026,6 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
     </div>
     <span class="user-id" id="userId"></span>
     <button class="btn" onclick="location.href='/profile'"><img class="cs-icon sm" src="/icons/ui/profile.svg" alt=""> Profile</button>
-    <button class="btn gdrive" onclick="openGDrivePanel()"><img class="cs-icon sm" src="/icons/ui/google-drive.svg" alt=""> Google Drive</button>
-    <button class="btn gphotos" onclick="location.href='/photos'"><img class="cs-icon sm" src="/icons/ui/google-photos.svg" alt=""> Google Photos</button>
     <button class="btn danger" onclick="doLogout()"><img class="cs-icon sm" src="/icons/ui/logout.svg" alt=""> Logout</button>
   </div>
 
@@ -1120,6 +1121,11 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
       <div class="gd-empty" id="gdNotConnected" style="display:none">Belum terhubung ke Google Drive. Klik Hubungkan untuk memulai.</div>
     </div>
   </section>
+
+  <!-- GOOGLE PHOTOS: embedded while persistent sidebar remains available -->
+  <section class="gphotos-panel" id="gphotosPanel">
+    <iframe class="gphotos-frame" id="gphotosFrame" title="Google Photos" loading="lazy"></iframe>
+  </section>
 </div>
 
 <!-- RIGHT SIDEBAR -->
@@ -1198,14 +1204,33 @@ function api(url,opts){
     .catch(function(e){return{};});
 }
 function doLogout(){api('/api/logout',{method:'POST'}).then(function(){location.href='/';});}
-function openGDrivePanel(){
+function setActiveNav(el){
+  document.querySelectorAll('.nav-item').forEach(function(x){x.classList.remove('active');});
+  if(el)el.classList.add('active');
+}
+function closeProviderPanels(){
+  document.body.classList.remove('gdrive-mode','gphotos-mode');
+  document.getElementById('gdrivePanel').style.display='none';
+  document.getElementById('gphotosPanel').style.display='none';
+}
+function openGDrivePanel(el){
+  closeProviderPanels();setActiveNav(el||document.querySelector('[data-nav="gdrive"]'));
   document.body.classList.add('gdrive-mode');
   document.getElementById('gdrivePanel').style.display='block';
   document.getElementById('gdBrowser').style.display='none';
   window.scrollTo({top:0,behavior:'smooth'});
   gdCheckStatus();
 }
-function closeGDrivePanel(){document.body.classList.remove('gdrive-mode');document.getElementById('gdrivePanel').style.display='none';loadAll();}
+function closeGDrivePanel(){closeProviderPanels();openNav('dashboard',document.querySelector('[data-nav="dashboard"]'));}
+function openGPhotosPanel(el){
+  closeProviderPanels();setActiveNav(el||document.querySelector('[data-nav="gphotos"]'));
+  document.body.classList.add('gphotos-mode');
+  document.getElementById('gphotosPanel').style.display='block';
+  var frame=document.getElementById('gphotosFrame');
+  if(!frame.src)frame.src='/photos?embed=1';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function closeGPhotosPanel(){closeProviderPanels();openNav('dashboard',document.querySelector('[data-nav="dashboard"]'));}
 var gdFolder='root',gdStack=[{id:'root',name:'My Drive'}],gdSelected=new Set(),gdItems=[];
 function gdConnect(){location.href='/api/gdrive/auth';}
 function gdCheckStatus(){api('/api/gdrive/status').then(function(d){var dot=document.getElementById('gdStatusDot'),txt=document.getElementById('gdStatusText');if(d.connected){dot.classList.add('on');txt.textContent='Terhubung ke Google Drive';document.getElementById('gdConnectBtn').style.display='none';document.getElementById('gdDisconnectBtn').style.display='inline-block';document.getElementById('gdBrowser').style.display='block';document.getElementById('gdNotConnected').style.display='none';gdLoadFiles('root');}else{dot.classList.remove('on');txt.textContent='Tidak terhubung';document.getElementById('gdConnectBtn').style.display='inline-block';document.getElementById('gdDisconnectBtn').style.display='none';document.getElementById('gdBrowser').style.display='none';document.getElementById('gdNotConnected').style.display='block';}});}
@@ -1226,7 +1251,8 @@ function init(){
     document.getElementById('userId').textContent=me.google_email||('ID: '+me.user_id);
     loadAll();
     setupDragDrop();
-    if(location.hash==='#gdrive')setTimeout(openGDrivePanel,250);
+    if(location.hash==='#gdrive')setTimeout(function(){openGDrivePanel();},250);
+    if(location.hash==='#gphotos')setTimeout(function(){openGPhotosPanel();},250);
   });
 }
 function loadAll(){loadStats();loadFolders();loadRecentDashboard();}
@@ -1451,6 +1477,7 @@ function loadNavPage(){
   });
 }
 function openNav(section,el){
+  closeProviderPanels();
   document.querySelectorAll('.nav-item').forEach(function(x){x.classList.remove('active');});
   if(el)el.classList.add('active');
   if(section==='dashboard'){currentView='dashboard';currentFolder=0;currentPage=1;markActiveView('dashboard');loadAll();loadBreadcrumb();return;}
