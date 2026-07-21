@@ -152,6 +152,16 @@ def init_drive_db():
         refresh_token TEXT,
         token_expiry TEXT
     )""")
+    # OAuth state is persisted server-side because some mobile/in-app browsers
+    # do not return the Flask session cookie after the Google cross-site redirect.
+    db_exec("""CREATE TABLE IF NOT EXISTS google_oauth_states (
+        state TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        flow_type TEXT NOT NULL DEFAULT 'drive',
+        code_verifier TEXT,
+        created_at INTEGER NOT NULL
+    )""")
+    db_exec("DELETE FROM google_oauth_states WHERE created_at < ?", (int(_time.time()) - 900,))
 
 # ----------------------------------------------------------------------------
 # Google credentials loading
@@ -421,15 +431,15 @@ def gdrive_auth():
     state = "drive:" + secrets.token_urlsafe(16)
     session["gdrive_state"] = state
     session["gdrive_uid"] = uid
-    if hasattr(flow, "code_verifier") and flow.code_verifier:
-        session["gdrive_code_verifier"] = flow.code_verifier
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
         state=state,
     )
-    if hasattr(flow, "code_verifier") and flow.code_verifier:
-        session["gdrive_code_verifier"] = flow.code_verifier
+    verifier = flow.code_verifier if hasattr(flow, "code_verifier") else None
+    db_exec("INSERT OR REPLACE INTO google_oauth_states (state,user_id,flow_type,code_verifier,created_at) VALUES (?,?,?,?,?)", (state, uid, "drive", verifier, int(_time.time())))
+    if verifier:
+        session["gdrive_code_verifier"] = verifier
     return redirect(auth_url)
 
 @drive_ext.route("/api/gdrive/callback")
@@ -458,7 +468,7 @@ def gdrive_callback():
         },
         headers={"Accept": "application/json"})
         token_data = token_resp.json()
-        print("[GOOGLE_LOGIN] Token response: status=%s data=%s" % (token_resp.status_code, str(token_data)[:200]), file=sys.stderr, flush=True)
+        print("[GOOGLE_LOGIN] Token response: status=%s keys=%s" % (token_resp.status_code, sorted(token_data.keys())), file=sys.stderr, flush=True)
         access_token = token_data.get("access_token")
         if not access_token:
             print("[GOOGLE_LOGIN] Token exchange failed: %s" % token_data, file=sys.stderr, flush=True)
@@ -492,9 +502,22 @@ def gdrive_callback():
         return _photos_callback_handler(photos_uid)
     uid = session.get("gdrive_uid")
     expected_state = session.get("gdrive_state")
-    if not uid:
-        return jsonify({"error": "auth session expired, please retry"}), 400
-    if expected_state and incoming_state != expected_state:
+    saved_verifier = session.pop("gdrive_code_verifier", None)
+    # Mobile/in-app browsers can lose the session cookie across Google's redirect.
+    # Recover only through the exact, short-lived, single-use server-side state record.
+    state_row = None
+    if incoming_state:
+        rows = db_query("SELECT user_id, code_verifier, created_at FROM google_oauth_states WHERE state=? AND flow_type='drive'", (incoming_state,))
+        state_row = rows[0] if rows else None
+    if (not uid or not expected_state) and state_row:
+        created = state_row["created_at"] if hasattr(state_row, "keys") else state_row[2]
+        if int(_time.time()) - int(created) <= 900:
+            uid = state_row["user_id"] if hasattr(state_row, "keys") else state_row[0]
+            saved_verifier = (state_row["code_verifier"] if hasattr(state_row, "keys") else state_row[1]) or saved_verifier
+            expected_state = incoming_state
+    if not uid or not expected_state:
+        return redirect("/drive#gdrive-auth-expired")
+    if incoming_state != expected_state:
         return jsonify({"error": "state mismatch (CSRF)"}), 400
 
     client_config = _client_config()
@@ -507,7 +530,6 @@ def gdrive_callback():
         redirect_uri=cfg.get("GDRIVE_REDIRECT_URI", url_for("drive_ext.gdrive_callback", _external=True, _scheme="https")),
         state=expected_state,
     )
-    saved_verifier = session.pop("gdrive_code_verifier", None)
     if saved_verifier:
         flow.code_verifier = saved_verifier
     try:
@@ -529,6 +551,10 @@ def gdrive_callback():
     )
     session.pop("gdrive_state", None)
     session.pop("gdrive_uid", None)
+    db_exec("DELETE FROM google_oauth_states WHERE state=?", (incoming_state,))
+    # Restore the authenticated app session if the mobile browser dropped its cookie.
+    session["user_id"] = uid
+    session.permanent = True
     # Redirect back to the embedded Google Drive panel inside /drive
     return redirect("/drive#gdrive")
 
