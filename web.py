@@ -1187,9 +1187,10 @@ function renderFileRows(files,total){
 }
 
 function loadRecentDashboard(){
-  currentView='folder';
-  currentFolder=0;
-  loadFiles();
+  currentView='recent';
+  currentFolder=-1;
+  currentPage=1;
+  loadNavPage();
 }
 
 var allFoldersVisible=false;
@@ -1354,7 +1355,8 @@ function loadNavPage(){
   api(url).then(function(d){
     if(!d||d.error)return;
     renderFileRows(d.files,d.total);
-    document.getElementById('fileTitle').textContent=document.getElementById('folderTitle').textContent+' ('+d.total+')';
+    var labels={recent:'File Terbaru',favorites:'Favorites',shared:'Shared with me',trash:'Trash'};
+    document.getElementById('fileTitle').textContent=(labels[currentView]||'File')+' ('+d.total+')';
     renderPagination(d.page,d.pages);
   });
 }
