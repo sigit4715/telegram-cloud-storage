@@ -973,6 +973,43 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 }
 @media(max-width:1100px){.right-sidebar{display:none}.main-wrap{margin-right:0}}
 @media(max-width:768px){.sidebar{display:none}.main-wrap{margin-left:0}.stats{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){
+  body{display:block;min-height:100vh;padding-bottom:60px}
+  .sidebar{display:none;position:fixed;top:0;left:0;bottom:0;width:260px;z-index:250;box-shadow:8px 0 24px rgba(0,0,0,.45)}
+  .mobile-sidebar-open .sidebar{display:flex!important}
+  .mobile-sidebar-backdrop{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.65);z-index:240}
+  .mobile-sidebar-open .mobile-sidebar-backdrop{display:block!important}
+  .main-wrap{margin-left:0!important;margin-right:0!important;padding:12px 10px;height:auto!important;overflow:visible!important}
+  .topbar{gap:8px;margin-bottom:12px}
+  .search-box{min-width:0;width:100%;flex:1 1 100%}
+  .search-box input{font-size:.82rem;padding-left:36px}
+  .search-box .shortcut{display:none}
+  .user-id{display:none}
+  .topbar .btn{padding:6px 10px;font-size:.76rem}
+  .mobile-menu-btn{display:inline-flex!important;align-items:center;justify-content:center;padding:6px 12px;font-size:1.1rem;background:var(--bg3);border-color:var(--accent2);color:var(--accent2)}
+  .stats{grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
+  .stat{padding:10px 8px;gap:8px}
+  .stat .icon{width:34px;height:34px;font-size:1.1rem}
+  .stat .num{font-size:1rem}
+  .stat .lbl{font-size:.65rem}
+  .folder-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
+  .folder-card{padding:10px;gap:8px;height:54px}
+  .folder-card .fc-name{font-size:.78rem}
+  .files-panel{padding:10px}
+  .files-table th:nth-child(2),.files-table td:nth-child(2),.files-table th:nth-child(4),.files-table td:nth-child(4){display:none}
+  .files-table td,.files-table th{padding:8px 6px;font-size:.75rem}
+  .files-table .fname-cell img,.files-table .fname-cell .ficon{width:28px;height:28px}
+  .gd-head{gap:12px}.gd-title h1{font-size:1.15rem}.gd-title p{font-size:.75rem}.gd-title .gd-logo{width:32px;height:32px}
+  .gd-connection{width:100%;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  .gd-status{padding:6px 10px;font-size:.72rem}
+  .gd-btn{padding:7px 12px;font-size:.76rem}
+  .gd-toolbar{flex-direction:column;align-items:stretch}.gd-toolbar select{width:100%;min-width:0}
+  .mobile-bottom-nav{position:fixed;left:0;right:0;bottom:0;height:56px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:center;justify-row:space-around;z-index:220;padding:0 6px}
+  .mobile-bottom-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--muted);font-size:.62rem;cursor:pointer;padding:4px 0}
+  .mobile-bottom-item.active{color:var(--accent2);font-weight:700}
+  .mobile-bottom-item img{width:18px;height:18px;object-fit:contain}
+}
+@media(min-width:601px){.mobile-menu-btn,.mobile-bottom-nav,.mobile-sidebar-backdrop{display:none!important}}
 /* ===== EMBEDDED GOOGLE DRIVE ===== */
 .gdrive-panel,.gphotos-panel{display:none}.gdrive-mode .stats,.gdrive-mode .breadcrumb,.gdrive-mode .toolbar,.gdrive-mode .drop-zone,.gdrive-mode .selected-bar,.gdrive-mode .folder-heading,.gdrive-mode .folder-grid,.gdrive-mode .files-panel,.gphotos-mode .stats,.gphotos-mode .breadcrumb,.gphotos-mode .toolbar,.gphotos-mode .drop-zone,.gphotos-mode .selected-bar,.gphotos-mode .folder-heading,.gphotos-mode .folder-grid,.gphotos-mode .files-panel{display:none}.gdrive-mode .gdrive-panel,.gphotos-mode .gphotos-panel{display:block}.gdrive-mode .right-sidebar,.gphotos-mode .right-sidebar{display:none}.gdrive-mode .main-wrap,.gphotos-mode .main-wrap{margin-right:0;max-width:none}.gphotos-panel{height:calc(100vh - 115px);min-height:650px;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--bg2)}.gphotos-frame{display:block;width:100%;height:100%;border:0;background:var(--bg)}.gdrive-hero{background:linear-gradient(135deg,rgba(38,27,79,.9),rgba(16,20,40,.96));border:1px solid var(--border);border-radius:16px;padding:25px;box-shadow:0 0 28px rgba(139,92,246,.12)}.gd-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.gd-title{display:flex;align-items:center;gap:13px}.gd-title .gd-logo{width:42px;height:42px}.gd-title h1{font-size:1.45rem}.gd-title p{font-size:.84rem;color:var(--muted);margin-top:5px}.gd-connection{display:flex;gap:10px;align-items:center}.gd-status{border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.09);color:#a7f3d0;border-radius:999px;padding:8px 14px;font-size:.78rem;display:inline-flex;align-items:center}.gd-status-dot{display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:8px}.gd-status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
 .gd-btn{appearance:none;-webkit-appearance:none;border-radius:12px;padding:9px 16px;font-size:.82rem;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;transition:all .2s ease;outline:none;border:1px solid transparent}
@@ -987,7 +1024,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 .gd-btn-copy{background:rgba(59,130,246,.12);color:#93c5fd;border:1px solid rgba(59,130,246,.4)}
 .gd-btn-copy:not(:disabled):hover{background:rgba(59,130,246,.22);color:#bfdbfe;border-color:#3b82f6}
 .gd-btn-copy:disabled{opacity:.45;cursor:not-allowed;border-color:var(--border);color:var(--muted);background:rgba(255,255,255,.03)}
-.gd-browser{margin-top:26px}.gd-browser h2{font-size:1rem;margin-bottom:12px}.gd-breadcrumb{color:var(--muted);font-size:.82rem;margin-bottom:11px}.gd-breadcrumb a{color:var(--accent2);cursor:pointer}.gd-breadcrumb .sep{margin:0 6px}.gd-toolbar{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}.gd-toolbar select{flex:1;min-width:190px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px}.gd-list{height:min(61vh,540px);overflow-y:auto;border:1px solid var(--border);border-radius:11px;background:var(--bg2)}.gd-list::-webkit-scrollbar{width:9px}.gd-list::-webkit-scrollbar-thumb{background:var(--accent);border-radius:8px}.gd-list-head{padding:13px 16px;border-bottom:1px solid var(--border);font-weight:700;font-size:.68rem;letter-spacing:.08em;color:var(--muted)}.gd-row{display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid rgba(139,92,246,.13);cursor:pointer}.gd-row:hover,.gd-row.selected{background:rgba(139,92,246,.14)}.gd-row .gd-check{accent-color:var(--accent);width:16px;height:16px}.gd-row .gd-name{flex:1;font-size:.87rem}.gd-row .gd-meta{font-size:.74rem;color:var(--muted)}.gd-row[data-folder="true"] .gd-name:after{content:'›';float:right;color:var(--accent2);font-size:1.35rem;line-height:.7rem}.gd-empty{text-align:center;padding:55px 20px;color:var(--muted)}.gd-sync-progress{margin:0 0 14px;padding:14px 16px;border:1px solid rgba(139,92,246,.4);border-radius:12px;background:linear-gradient(135deg,rgba(139,92,246,.12),rgba(59,130,246,.06));box-shadow:0 8px 24px rgba(0,0,0,.14)}.gd-sync-progress-head,.gd-sync-meta{display:flex;justify-content:space-between;gap:12px;align-items:center}.gd-sync-progress-head{font-size:.82rem;color:var(--text)}.gd-sync-progress-head span{color:#c4b5fd;font-weight:700}.gd-sync-track{height:10px;margin:10px 0 8px;border-radius:999px;overflow:hidden;background:rgba(0,0,0,.35);border:1px solid rgba(139,92,246,.25)}.gd-sync-track i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7c3aed,#a855f7,#60a5fa);box-shadow:0 0 14px rgba(168,85,247,.6);transition:width .35s ease}.gd-sync-track i.indeterminate{width:35%!important;animation:gdSyncMove 1.1s ease-in-out infinite}.gd-sync-meta{font-size:.72rem;color:var(--muted)}.gd-sync-current{margin-top:6px;font-size:.7rem;color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}@keyframes gdSyncMove{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}.gd-progress{display:none;margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px}.gd-progress.show{display:block}.gd-progress-item{display:flex;gap:10px;padding:5px 0;font-size:.8rem}.gd-progress-name{flex:1}.gd-ok{color:var(--green)}.gd-err{color:var(--red)}@media(max-width:768px){.gd-head{align-items:stretch;flex-direction:column}.gd-connection{justify-content:space-between}.gdrive-hero{padding:15px}.gd-list{height:55vh}}
+.gd-browser{margin-top:26px}.gd-browser h2{font-size:1rem;margin-bottom:12px}.gd-breadcrumb{color:var(--muted);font-size:.82rem;margin-bottom:11px}.gd-breadcrumb a{color:var(--accent2);cursor:pointer}.gd-breadcrumb .sep{margin:0 6px}.gd-toolbar{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}.gd-toolbar select{flex:1;min-width:190px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px}.gd-list{height:min(61vh,540px);overflow-y:auto;border:1px solid var(--border);border-radius:11px;background:var(--bg2)}.gd-list::-webkit-scrollbar{width:9px}.gd-list::-webkit-scrollbar-thumb{background:var(--accent);border-radius:8px}.gd-list-head{padding:13px 16px;border-bottom:1px solid var(--border);font-weight:700;font-size:.68rem;letter-spacing:.08em;color:var(--muted)}.gd-row{display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid rgba(139,92,246,.13);cursor:pointer}.gd-row:hover,.gd-row.selected{background:rgba(139,92,246,.14)}.gd-row .gd-check{accent-color:var(--accent);width:16px;height:16px}.gd-row .gd-name{flex:1;font-size:.87rem}.gd-row .gd-meta{font-size:.74rem;color:var(--muted)}.gd-row[data-folder="true"] .gd-name:after{content:'›';float:right;color:var(--accent2);font-size:1.35rem;line-height:.7rem}.gd-empty{text-align:center;padding:55px 20px;color:var(--muted)}.gd-sync-progress{margin:0 0 14px;padding:14px 16px;border:1px solid rgba(139,92,246,.4);border-radius:12px;background:linear-gradient(135deg,rgba(139,92,246,.12),rgba(59,130,246,.06));box-shadow:0 8px 24px rgba(0,0,0,.14)}.gd-sync-progress-head,.gd-sync-meta{display:flex;justify-content:space-between;gap:12px;align-items:center}.gd-sync-progress-head{font-size:.82rem;color:var(--text)}.gd-sync-progress-head span{color:#c4b5fd;font-weight:700}.gd-sync-actions{display:inline-flex;align-items:center;gap:10px}.gd-sync-cancel{border:1px solid rgba(239,68,68,.45);background:rgba(239,68,68,.13);color:#fca5a5;border-radius:999px;padding:5px 11px;font-size:.68rem;font-weight:700;cursor:pointer}.gd-sync-cancel:hover{background:rgba(239,68,68,.24);color:#fee2e2;border-color:#ef4444}.gd-sync-cancel:disabled{opacity:.45;cursor:not-allowed}.gd-sync-track{height:10px;margin:10px 0 8px;border-radius:999px;overflow:hidden;background:rgba(0,0,0,.35);border:1px solid rgba(139,92,246,.25)}.gd-sync-track i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7c3aed,#a855f7,#60a5fa);box-shadow:0 0 14px rgba(168,85,247,.6);transition:width .35s ease}.gd-sync-track i.indeterminate{width:35%!important;animation:gdSyncMove 1.1s ease-in-out infinite}.gd-sync-meta{font-size:.72rem;color:var(--muted)}.gd-sync-current{margin-top:6px;font-size:.7rem;color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}@keyframes gdSyncMove{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}.gd-progress{display:none;margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px}.gd-progress.show{display:block}.gd-progress-item{display:flex;gap:10px;padding:5px 0;font-size:.8rem}.gd-progress-name{flex:1}.gd-ok{color:var(--green)}.gd-err{color:var(--red)}@media(max-width:768px){.gd-head{align-items:stretch;flex-direction:column}.gd-connection{justify-content:space-between}.gdrive-hero{padding:15px}.gd-list{height:55vh}}
 </style>
 </head>
 <body>
@@ -1025,6 +1062,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
       <span class="shortcut">Ctrl /</span>
     </div>
     <span class="user-id" id="userId"></span>
+    <button class="btn mobile-menu-btn" onclick="toggleMobileSidebar()" type="button" aria-label="Menu">☰</button>
     <button class="btn" onclick="location.href='/profile'"><img class="cs-icon sm" src="/icons/ui/profile.svg" alt=""> Profile</button>
     <button class="btn danger" onclick="doLogout()"><img class="cs-icon sm" src="/icons/ui/logout.svg" alt=""> Logout</button>
   </div>
@@ -1116,7 +1154,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
         <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="gd-btn gd-btn-sync" id="gdSyncBtn" onclick="gdSyncDrive()">↻&nbsp; Sinkron Otomatis</button><button class="gd-btn gd-btn-copy" id="gdCopyBtn" onclick="gdCopySelected()" disabled>➤&nbsp; Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
         <div id="gdSyncStatus" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--border);border-radius:8px"></div>
         <div class="gd-sync-progress" id="gdSyncProgress" style="display:none">
-          <div class="gd-sync-progress-head"><strong>Sinkronisasi Google Drive</strong><span id="gdSyncProgressText">0%</span></div>
+          <div class="gd-sync-progress-head"><strong>Sinkronisasi Google Drive</strong><span class="gd-sync-actions"><span id="gdSyncProgressText">0%</span><button type="button" class="gd-sync-cancel" id="gdSyncCancelBtn" onclick="gdCancelSync()">Batal</button></span></div>
           <div class="gd-sync-track"><i id="gdSyncProgressBar"></i></div>
           <div class="gd-sync-meta"><span id="gdSyncProgressMessage">Menyiapkan...</span><span id="gdSyncProgressCount">0 / 0 file</span></div>
           <div class="gd-sync-current" id="gdSyncCurrent"></div>
@@ -1187,6 +1225,14 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
   <div id="previewContent"></div>
 </div>
 <div id="err"></div>
+<div class="mobile-sidebar-backdrop" onclick="toggleMobileSidebar()"></div>
+<nav class="mobile-bottom-nav" id="mobileBottomNav">
+  <div class="mobile-bottom-item active" onclick="mobileNav('dashboard',this)"><img class="cs-icon" src="/icons/ui/dashboard.svg" alt="">Dashboard</div>
+  <div class="mobile-bottom-item" onclick="mobileNav('recent',this)"><img class="cs-icon" src="/icons/ui/recent.svg" alt="">Recent</div>
+  <div class="mobile-bottom-item" onclick="mobileNav('favorites',this)"><img class="cs-icon" src="/icons/ui/favorites.svg" alt="">Favorites</div>
+  <div class="mobile-bottom-item" onclick="mobileNav('trash',this)"><img class="cs-icon" src="/icons/ui/trash.svg" alt="">Trash</div>
+  <div class="mobile-bottom-item" onclick="openGDrivePanel(this)"><img class="cs-icon" src="/icons/ui/google-drive.svg" alt="">Drive</div>
+</nav>
 
 <script>
 function applyTheme(theme){
@@ -1210,6 +1256,14 @@ function api(url,opts){
     .catch(function(e){return{};});
 }
 function doLogout(){api('/api/logout',{method:'POST'}).then(function(){location.href='/';});}
+function toggleMobileSidebar(){document.body.classList.toggle('mobile-sidebar-open');}
+function mobileNav(view,el){
+  document.querySelectorAll('.mobile-bottom-item').forEach(function(x){x.classList.remove('active');});
+  if(el)el.classList.add('active');
+  closeProviderPanels();
+  openNav(view,document.querySelector('[data-nav="'+view+'"]'));
+  document.body.classList.remove('mobile-sidebar-open');
+}
 function setActiveNav(el){
   document.querySelectorAll('.nav-item').forEach(function(x){x.classList.remove('active');});
   if(el)el.classList.add('active');
@@ -1239,7 +1293,33 @@ function openGPhotosPanel(el){
 function closeGPhotosPanel(){closeProviderPanels();openNav('dashboard',document.querySelector('[data-nav="dashboard"]'));}
 var gdFolder='root',gdStack=[{id:'root',name:'My Drive'}],gdSelected=new Set(),gdItems=[];
 function gdConnect(){location.href='/api/gdrive/auth';}
-function gdCheckStatus(){api('/api/gdrive/status').then(function(d){var dot=document.getElementById('gdStatusDot'),txt=document.getElementById('gdStatusText');if(d.connected){dot.classList.add('on');txt.textContent='Terhubung ke Google Drive';document.getElementById('gdConnectBtn').style.display='none';document.getElementById('gdDisconnectBtn').style.display='inline-block';document.getElementById('gdBrowser').style.display='block';document.getElementById('gdNotConnected').style.display='none';gdLoadFiles('root');}else{dot.classList.remove('on');txt.textContent='Tidak terhubung';document.getElementById('gdConnectBtn').style.display='inline-block';document.getElementById('gdDisconnectBtn').style.display='none';document.getElementById('gdBrowser').style.display='none';document.getElementById('gdNotConnected').style.display='block';}});}
+function gdCheckStatus(){
+  api('/api/gdrive/status').then(function(d){
+    var dot=document.getElementById('gdStatusDot'),txt=document.getElementById('gdStatusText');
+    if(d.connected){
+      dot.classList.add('on');
+      txt.textContent='Terhubung ke Google Drive';
+      document.getElementById('gdConnectBtn').style.display='none';
+      document.getElementById('gdDisconnectBtn').style.display='inline-block';
+      document.getElementById('gdBrowser').style.display='block';
+      document.getElementById('gdNotConnected').style.display='none';
+      gdLoadFiles('root');
+      // Auto-resume progress display if sync is already running in background
+      api('/api/gdrive/sync/status').then(function(status){
+        if(status&&status.running){
+          gdStartSyncPolling();
+        }
+      });
+    }else{
+      dot.classList.remove('on');
+      txt.textContent='Tidak terhubung';
+      document.getElementById('gdConnectBtn').style.display='inline-block';
+      document.getElementById('gdDisconnectBtn').style.display='none';
+      document.getElementById('gdBrowser').style.display='none';
+      document.getElementById('gdNotConnected').style.display='block';
+    }
+  });
+}
 function gdDisconnect(){if(confirm('Putuskan koneksi Google Drive?'))api('/api/gdrive/disconnect',{method:'POST'}).then(gdCheckStatus);}
 function gdLoadFiles(folderId){gdFolder=folderId;gdSelected.clear();gdUpdateCount();api('/api/gdrive/files?folder_id='+encodeURIComponent(folderId)).then(function(d){if(d.error){alert(d.error);return;}gdItems=(d.folders||[]).concat(d.files||[]);gdRenderBreadcrumb();gdRenderSelect(d.folders||[]);gdRenderList(gdItems);});}
 function gdRenderBreadcrumb(){var h='';gdStack.forEach(function(f,i){if(i)h+='<span class="sep">/</span>';h+=i===gdStack.length-1?'<span>'+escHtml(f.name)+'</span>':'<a onclick="gdNavTo('+i+')">'+escHtml(f.name)+'</a>';});document.getElementById('gdBreadcrumb').innerHTML=h;}
@@ -1262,10 +1342,22 @@ function gdRenderSyncProgress(d){
   if(d.running&&!(d.total>0)){bar.classList.add('indeterminate');bar.style.width='35%';}
   else{bar.classList.remove('indeterminate');bar.style.width=pct+'%';}
   document.getElementById('gdSyncBtn').disabled=!!d.running;
+  document.getElementById('gdSyncCancelBtn').style.display=d.running?'inline-flex':'none';
+  document.getElementById('gdSyncCancelBtn').disabled=false;
   if(!d.running&&gdSyncTimer){clearInterval(gdSyncTimer);gdSyncTimer=null;}
 }
 function gdPollSync(){api('/api/gdrive/sync/status?t='+Date.now()).then(function(d){if(!d||d.error)return;gdRenderSyncProgress(d);});}
 function gdStartSyncPolling(){if(gdSyncTimer)clearInterval(gdSyncTimer);gdPollSync();gdSyncTimer=setInterval(gdPollSync,1000);}
+function gdCancelSync(){
+  if(!confirm('Batalkan sinkronisasi Google Drive yang sedang berjalan?'))return;
+  var btn=document.getElementById('gdSyncCancelBtn');
+  btn.disabled=true;
+  document.getElementById('gdSyncProgressMessage').textContent='Membatalkan sinkronisasi...';
+  api('/api/gdrive/sync/cancel',{method:'GET'}).then(function(d){
+    if(!d||d.error){btn.disabled=false;alert((d&&d.error)||'Gagal membatalkan sinkronisasi');return;}
+    gdPollSync();
+  });
+}
 function gdSyncDrive(){
   if(!confirm('Upload file dari Google Drive ke Telegram?'))return;
   var st=document.getElementById('gdSyncStatus'),panel=document.getElementById('gdSyncProgress'),bar=document.getElementById('gdSyncProgressBar');
