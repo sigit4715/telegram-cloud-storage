@@ -529,8 +529,8 @@ def gdrive_callback():
     )
     session.pop("gdrive_state", None)
     session.pop("gdrive_uid", None)
-    # Redirect back to the gdrive UI
-    return redirect(url_for("drive_ext.gdrive_page"))
+    # Redirect back to the embedded Google Drive panel inside /drive
+    return redirect("/drive#gdrive")
 
 @drive_ext.route("/api/gdrive/files")
 def gdrive_files():

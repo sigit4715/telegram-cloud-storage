@@ -973,6 +973,8 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 }
 @media(max-width:1100px){.right-sidebar{display:none}.main-wrap{margin-right:0}}
 @media(max-width:768px){.sidebar{display:none}.main-wrap{margin-left:0}.stats{grid-template-columns:repeat(2,1fr)}}
+/* ===== EMBEDDED GOOGLE DRIVE ===== */
+.gdrive-panel{display:none}.gdrive-mode .stats,.gdrive-mode .breadcrumb,.gdrive-mode .toolbar,.gdrive-mode .drop-zone,.gdrive-mode .selected-bar,.gdrive-mode .folder-heading,.gdrive-mode .folder-grid,.gdrive-mode .files-panel{display:none}.gdrive-mode .gdrive-panel{display:block}.gdrive-mode .right-sidebar{display:none}.gdrive-mode .main-wrap{margin-right:0;max-width:none}.gdrive-hero{background:linear-gradient(135deg,rgba(38,27,79,.9),rgba(16,20,40,.96));border:1px solid var(--border);border-radius:16px;padding:25px;box-shadow:0 0 28px rgba(139,92,246,.12)}.gd-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.gd-title{display:flex;align-items:center;gap:13px}.gd-title .gd-logo{width:42px;height:42px}.gd-title h1{font-size:1.45rem}.gd-title p{font-size:.84rem;color:var(--muted);margin-top:5px}.gd-connection{display:flex;gap:9px;align-items:center}.gd-status{border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.09);color:#a7f3d0;border-radius:999px;padding:9px 12px;font-size:.78rem}.gd-status-dot{display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:6px}.gd-status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}.gd-browser{margin-top:26px}.gd-browser h2{font-size:1rem;margin-bottom:12px}.gd-breadcrumb{color:var(--muted);font-size:.82rem;margin-bottom:11px}.gd-breadcrumb a{color:var(--accent2);cursor:pointer}.gd-breadcrumb .sep{margin:0 6px}.gd-toolbar{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}.gd-toolbar select{flex:1;min-width:190px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px}.gd-list{height:min(61vh,540px);overflow-y:auto;border:1px solid var(--border);border-radius:11px;background:var(--bg2)}.gd-list::-webkit-scrollbar{width:9px}.gd-list::-webkit-scrollbar-thumb{background:var(--accent);border-radius:8px}.gd-list-head{padding:13px 16px;border-bottom:1px solid var(--border);font-weight:700;font-size:.68rem;letter-spacing:.08em;color:var(--muted)}.gd-row{display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid rgba(139,92,246,.13);cursor:pointer}.gd-row:hover,.gd-row.selected{background:rgba(139,92,246,.14)}.gd-row .gd-check{accent-color:var(--accent);width:16px;height:16px}.gd-row .gd-name{flex:1;font-size:.87rem}.gd-row .gd-meta{font-size:.74rem;color:var(--muted)}.gd-row[data-folder="true"] .gd-name:after{content:'›';float:right;color:var(--accent2);font-size:1.35rem;line-height:.7rem}.gd-empty{text-align:center;padding:55px 20px;color:var(--muted)}.gd-progress{display:none;margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px}.gd-progress.show{display:block}.gd-progress-item{display:flex;gap:10px;padding:5px 0;font-size:.8rem}.gd-progress-name{flex:1}.gd-ok{color:var(--green)}.gd-err{color:var(--red)}@media(max-width:768px){.gd-head{align-items:stretch;flex-direction:column}.gd-connection{justify-content:space-between}.gdrive-hero{padding:15px}.gd-list{height:55vh}}
 </style>
 </head>
 <body>
@@ -1008,7 +1010,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
     </div>
     <span class="user-id" id="userId"></span>
     <button class="btn" onclick="location.href='/profile'"><img class="cs-icon sm" src="/icons/ui/profile.svg" alt=""> Profile</button>
-    <button class="btn gdrive" onclick="location.href='/gdrive'"><img class="cs-icon sm" src="/icons/ui/google-drive.svg" alt=""> Google Drive</button>
+    <button class="btn gdrive" onclick="openGDrivePanel()"><img class="cs-icon sm" src="/icons/ui/google-drive.svg" alt=""> Google Drive</button>
     <button class="btn gphotos" onclick="location.href='/photos'"><img class="cs-icon sm" src="/icons/ui/google-photos.svg" alt=""> Google Photos</button>
     <button class="btn danger" onclick="doLogout()"><img class="cs-icon sm" src="/icons/ui/logout.svg" alt=""> Logout</button>
   </div>
@@ -1087,6 +1089,24 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
     <div id="filesEmpty" class="empty" style="display:none">Tidak ada file</div>
     <div class="pagination" id="pagination"></div>
   </div>
+
+  <!-- GOOGLE DRIVE: embedded in /drive -->
+  <section class="gdrive-panel" id="gdrivePanel">
+    <div class="gdrive-hero">
+      <div class="gd-head">
+        <div class="gd-title"><img class="gd-logo" src="/icons/ui/google-drive.svg" alt="Google Drive"><div><h1>Google Drive</h1><p>Kelola, sinkronkan dan akses file Anda dengan mudah.</p></div></div>
+        <div class="gd-connection"><span class="gd-status"><i class="gd-status-dot" id="gdStatusDot"></i><span id="gdStatusText">Memeriksa koneksi...</span></span><button class="btn" id="gdConnectBtn" style="display:none" onclick="gdConnect()">Hubungkan</button><button class="btn danger" id="gdDisconnectBtn" style="display:none" onclick="gdDisconnect()">Putuskan</button><button class="btn" onclick="closeGDrivePanel()">Tutup</button></div>
+      </div>
+      <div class="gd-browser" id="gdBrowser" style="display:none">
+        <h2>My Drive</h2><div class="gd-breadcrumb" id="gdBreadcrumb"></div>
+        <div class="gd-toolbar"><select id="gdFolderSelect" onchange="gdGoSelectedFolder()"></select><button class="btn primary" id="gdSyncBtn" onclick="gdSyncDrive()">Sinkron Otomatis</button><button class="btn" id="gdCopyBtn" onclick="gdCopySelected()" disabled>Copy ke Telegram (<span id="gdSelCount">0</span>)</button></div>
+        <div id="gdSyncStatus" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--border);border-radius:8px"></div>
+        <div class="gd-list"><div class="gd-list-head">NAMA FOLDER / FILE</div><div id="gdFileList"></div></div>
+        <div class="gd-progress" id="gdProgress"><strong>Copy Progress</strong><div id="gdProgressList"></div></div>
+      </div>
+      <div class="gd-empty" id="gdNotConnected" style="display:none">Belum terhubung ke Google Drive. Klik Hubungkan untuk memulai.</div>
+    </div>
+  </section>
 </div>
 
 <!-- RIGHT SIDEBAR -->
@@ -1165,12 +1185,35 @@ function api(url,opts){
     .catch(function(e){return{};});
 }
 function doLogout(){api('/api/logout',{method:'POST'}).then(function(){location.href='/';});}
+function openGDrivePanel(){
+  document.body.classList.add('gdrive-mode');
+  document.getElementById('gdrivePanel').style.display='block';
+  document.getElementById('gdBrowser').style.display='none';
+  window.scrollTo({top:0,behavior:'smooth'});
+  gdCheckStatus();
+}
+function closeGDrivePanel(){document.body.classList.remove('gdrive-mode');document.getElementById('gdrivePanel').style.display='none';loadAll();}
+var gdFolder='root',gdStack=[{id:'root',name:'My Drive'}],gdSelected=new Set(),gdItems=[];
+function gdConnect(){location.href='/api/gdrive/auth';}
+function gdCheckStatus(){api('/api/gdrive/status').then(function(d){var dot=document.getElementById('gdStatusDot'),txt=document.getElementById('gdStatusText');if(d.connected){dot.classList.add('on');txt.textContent='Terhubung ke Google Drive';document.getElementById('gdConnectBtn').style.display='none';document.getElementById('gdDisconnectBtn').style.display='inline-block';document.getElementById('gdBrowser').style.display='block';document.getElementById('gdNotConnected').style.display='none';gdLoadFiles('root');}else{dot.classList.remove('on');txt.textContent='Tidak terhubung';document.getElementById('gdConnectBtn').style.display='inline-block';document.getElementById('gdDisconnectBtn').style.display='none';document.getElementById('gdBrowser').style.display='none';document.getElementById('gdNotConnected').style.display='block';}});}
+function gdDisconnect(){if(confirm('Putuskan koneksi Google Drive?'))api('/api/gdrive/disconnect',{method:'POST'}).then(gdCheckStatus);}
+function gdLoadFiles(folderId){gdFolder=folderId;gdSelected.clear();gdUpdateCount();api('/api/gdrive/files?folder_id='+encodeURIComponent(folderId)).then(function(d){if(d.error){alert(d.error);return;}gdItems=(d.folders||[]).concat(d.files||[]);gdRenderBreadcrumb();gdRenderSelect(d.folders||[]);gdRenderList(gdItems);});}
+function gdRenderBreadcrumb(){var h='';gdStack.forEach(function(f,i){if(i)h+='<span class="sep">/</span>';h+=i===gdStack.length-1?'<span>'+escHtml(f.name)+'</span>':'<a onclick="gdNavTo('+i+')">'+escHtml(f.name)+'</a>';});document.getElementById('gdBreadcrumb').innerHTML=h;}
+function gdRenderSelect(fs){document.getElementById('gdFolderSelect').innerHTML='<option value="">Masuk ke folder...</option>'+fs.map(function(f){return '<option value="'+f.id+'">📁 '+escHtml(f.name)+'</option>';}).join('');}
+function gdGoSelectedFolder(){var v=document.getElementById('gdFolderSelect').value;if(v)gdEnterFolder(v);}
+function gdNavTo(i){gdStack=gdStack.slice(0,i+1);gdLoadFiles(gdStack[i].id);}
+function gdEnterFolder(id){var f=gdItems.find(function(x){return x.id===id&&x.is_folder;});if(f){gdStack.push({id:id,name:f.name});gdLoadFiles(id);}}
+function gdRenderList(items){var el=document.getElementById('gdFileList');if(!items.length){el.innerHTML='<div class="gd-empty">Folder kosong</div>';return;}el.innerHTML=items.map(function(it){var icon=it.is_folder?'📁':it.is_google_doc?'📝':(it.mimeType||'').startsWith('image/')?'🖼️':(it.mimeType||'').startsWith('video/')?'🎬':'📄';var cb=it.is_folder?'':'<input class="gd-check" type="checkbox" data-id="'+it.id+'">';return '<div class="gd-row" data-id="'+it.id+'" data-folder="'+it.is_folder+'">'+cb+'<span class="gd-ficon">'+icon+'</span><span class="gd-name">'+escHtml(it.name)+'</span><span class="gd-meta">'+(it.size_human||'')+'</span></div>';}).join('');el.querySelectorAll('.gd-row').forEach(function(row){row.onclick=function(e){if(e.target.classList.contains('gd-check')){var id=row.dataset.id;if(e.target.checked)gdSelected.add(id);else gdSelected.delete(id);row.classList.toggle('selected',e.target.checked);gdUpdateCount();}else if(row.dataset.folder==='true')gdEnterFolder(row.dataset.id);};});}
+function gdUpdateCount(){document.getElementById('gdSelCount').textContent=gdSelected.size;document.getElementById('gdCopyBtn').disabled=!gdSelected.size;}
+function gdCopySelected(){var ids=[...gdSelected];if(!ids.length)return;api('/api/gdrive/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:ids,folder_id:0})}).then(function(d){alert((d.results||[]).filter(function(x){return x.ok;}).length+' file berhasil dicopy ke Telegram');});}
+function gdSyncDrive(){if(!confirm('Upload file dari Google Drive ke Telegram?'))return;var st=document.getElementById('gdSyncStatus');st.style.display='block';st.textContent='Memulai sinkronisasi...';api('/api/gdrive/sync?t='+Date.now()).then(function(d){st.textContent=d.error||'Sinkronisasi dimulai. Pantau halaman Google Drive untuk progres.';});}
 function init(){
   api('/api/me').then(function(me){
     if(!me||!me.logged_in){location.href='/';return;}
     document.getElementById('userId').textContent=me.google_email||('ID: '+me.user_id);
     loadAll();
     setupDragDrop();
+    if(location.hash==='#gdrive')setTimeout(openGDrivePanel,250);
   });
 }
 function loadAll(){loadStats();loadFolders();loadRecentDashboard();}
