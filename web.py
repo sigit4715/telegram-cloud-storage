@@ -479,6 +479,33 @@ def api_restore_from_trash(fid):
     db_exec("UPDATE files SET deleted_at=NULL WHERE id=?", (fid,))
     return jsonify({"ok": True})
 
+@app.route("/api/trash/<int:fid>/permanent", methods=["DELETE"])
+@login_required
+def api_permanently_delete_trash(fid):
+    row = db_query("SELECT id, msg_id FROM files WHERE id=? AND deleted_at IS NOT NULL", (fid,))
+    if not row:
+        return jsonify({"error": "Not found in Trash"}), 404
+    try:
+        run_async(telethon_client.delete_messages(CHANNEL, [row[0]["msg_id"]]))
+    except Exception as e:
+        return jsonify({"error": f"Telegram delete failed: {e}"}), 502
+    db_exec("DELETE FROM files WHERE id=?", (fid,))
+    return jsonify({"ok": True, "telegram_deleted": True})
+
+@app.route("/api/trash/empty", methods=["DELETE"])
+@login_required
+def api_empty_trash():
+    rows = db_query("SELECT id, msg_id FROM files WHERE deleted_at IS NOT NULL")
+    deleted = 0
+    for row in rows:
+        try:
+            run_async(telethon_client.delete_messages(CHANNEL, [row["msg_id"]]))
+            db_exec("DELETE FROM files WHERE id=?", (row["id"],))
+            deleted += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "telegram_deleted": deleted, "requested": len(rows)})
+
 @app.route("/api/files/type/<kind>")
 @login_required
 def api_files_by_type(kind):
@@ -1052,7 +1079,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 
   <!-- FILES TABLE -->
   <div class="files-panel">
-    <div class="panel-title icon-label" id="fileTitle"><img class="cs-icon" src="/icons/ui/file.svg" alt=""> File Terbaru</div>
+    <div class="panel-title icon-label"><img class="cs-icon" src="/icons/ui/file.svg" alt=""><span id="fileTitle">File Terbaru</span><button id="emptyTrashBtn" class="btn danger" style="display:none;margin-left:auto" onclick="emptyTrash()">Kosongkan Trash</button></div>
     <table class="files-table" id="filesTable">
       <thead><tr><th>Nama</th><th>Owner</th><th>Ukuran</th><th>Diubah</th><th>Aksi</th></tr></thead>
       <tbody id="filesBody"></tbody>
@@ -1187,7 +1214,8 @@ function renderFileRows(files,total){
   empty.style.display='none';table.style.display='table';document.getElementById('fileTitle').textContent='File Terbaru';
   var h='';
   for(var i=0;i<files.length;i++){var f=files[i],thumb=f.is_image?'<img src="/api/thumb/'+f.id+'" width="28" height="28" loading="lazy">':'<div class="ficon">'+recentIcon(f,false)+'</div>';
-    h+='<tr onclick="openRecentFile('+f.id+','+f.folder_id+')" style="cursor:pointer"><td><div class="fname-cell">'+thumb+'<span>'+escHtml(f.name)+'</span></div></td><td><span class="owner-badge">Saya</span></td><td>'+f.size_human+'</td><td>'+f.uploaded+'</td><td><button class="act-btn fav-btn '+(f.is_favorite?'active':'')+'" data-action="favorite" data-id="'+f.id+'" title="'+(f.is_favorite?'Hapus dari Favorites':'Tambahkan ke Favorites')+'">'+(f.is_favorite?'&#9733;':'&#9734;')+'</button><a class="act-btn" href="/api/download/'+f.id+'" onclick="event.stopPropagation()" title="Download"><img class="cs-icon sm" src="/icons/ui/download.svg" alt="Download"></a><button class="del-btn" data-action="delFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Pindah ke Trash">&#10005;</button></td></tr>';}
+    var trashActions=currentView==='trash'?'<button class="act-btn" data-action="restoreFile" data-id="'+f.id+'" title="Pulihkan">&#8634;</button><button class="del-btn" style="display:inline-block" data-action="purgeFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Hapus permanen dari Telegram">&#10005;</button>':'<button class="act-btn fav-btn '+(f.is_favorite?'active':'')+'" data-action="favorite" data-id="'+f.id+'" title="'+(f.is_favorite?'Hapus dari Favorites':'Tambahkan ke Favorites')+'">'+(f.is_favorite?'&#9733;':'&#9734;')+'</button><a class="act-btn" href="/api/download/'+f.id+'" onclick="event.stopPropagation()" title="Download"><img class="cs-icon sm" src="/icons/ui/download.svg" alt="Download"></a><button class="del-btn" data-action="delFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Pindah ke Trash">&#10005;</button>';
+    h+='<tr onclick="openRecentFile('+f.id+','+f.folder_id+')" style="cursor:pointer"><td><div class="fname-cell">'+thumb+'<span>'+escHtml(f.name)+'</span></div></td><td><span class="owner-badge">Saya</span></td><td>'+f.size_human+'</td><td>'+f.uploaded+'</td><td>'+trashActions+'</td></tr>';}
   tbody.innerHTML=h;
 }
 
@@ -1362,6 +1390,7 @@ function loadNavPage(){
     renderFileRows(d.files,d.total);
     var labels={recent:'File Terbaru',favorites:'Favorites',shared:'Shared with me',trash:'Trash'};
     document.getElementById('fileTitle').textContent=(labels[currentView]||'File')+' ('+d.total+')';
+    document.getElementById('emptyTrashBtn').style.display=currentView==='trash'&&d.total?'inline-flex':'none';
     renderPagination(d.page,d.pages);
   });
 }
@@ -1396,6 +1425,10 @@ document.addEventListener('click',function(e){
   var act=btn.getAttribute('data-action'),id=btn.getAttribute('data-id'),name=btn.getAttribute('data-name');
   if(act==='delFolder'){
     if(confirm('Hapus folder "'+name+'" dan semua isinya?'))api('/api/folders/'+id,{method:'DELETE'}).then(function(){loadAll();});
+  }else if(act==='restoreFile'){
+    api('/api/trash/'+id+'/restore',{method:'POST'}).then(function(d){if(d&&d.ok)loadCurrentView();});
+  }else if(act==='purgeFile'){
+    purgeFile(id,name);
   }else if(act==='favorite'){
     toggleFavorite(id);
   }else if(act==='delFile'){
@@ -1405,6 +1438,22 @@ document.addEventListener('click',function(e){
 function toggleFavorite(id){
   api('/api/files/'+id+'/favorite',{method:'POST'}).then(function(d){
     if(d&&d.ok){loadCurrentView();}
+  });
+}
+function restoreFile(id){
+  api('/api/trash/'+id+'/restore',{method:'POST'}).then(function(d){if(d&&d.ok)loadCurrentView();});
+}
+function purgeFile(id,name){
+  if(!confirm('HAPUS PERMANEN "'+name+'" dari Trash dan Telegram? Tindakan ini tidak dapat dibatalkan.'))return;
+  api('/api/trash/'+id+'/permanent',{method:'DELETE'}).then(function(d){
+    if(d&&d.ok){loadCurrentView();loadStats();}else alert((d&&d.error)||'Gagal menghapus file dari Telegram');
+  });
+}
+function emptyTrash(){
+  if(!confirm('Kosongkan Trash? Semua file akan dihapus permanen dari database dan Telegram.'))return;
+  api('/api/trash/empty',{method:'DELETE'}).then(function(d){
+    if(d&&d.ok){loadCurrentView();loadStats();}
+    else alert((d&&d.error)||'Gagal mengosongkan Trash');
   });
 }
 
