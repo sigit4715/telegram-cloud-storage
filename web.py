@@ -285,6 +285,7 @@ def _file_json(rows):
         files.append({"id": r["id"], "name": r["file_name"], "size": r["size"],
                       "size_human": human_size(r["size"]), "mime": mime,
                       "uploaded": r["uploaded_at"], "folder_id": r["folder_id"],
+                      "is_favorite": bool(r["is_favorite"]),
                       "is_image": mime.startswith("image/"), "is_video": mime.startswith("video/"),
                       "is_audio": mime.startswith("audio/"), "is_pdf": mime == "application/pdf"})
     return files
@@ -306,7 +307,7 @@ def api_files():
 
     total = db_scalar(f"SELECT COUNT(*) FROM files {where}", params)
     rows = db_query(
-        f"SELECT id, file_name, size, mime, uploaded_at, folder_id FROM files {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"SELECT id, file_name, size, mime, uploaded_at, folder_id, is_favorite FROM files {where} ORDER BY id DESC LIMIT ? OFFSET ?",
         params + [per_page, offset],
     )
 
@@ -320,6 +321,7 @@ def api_files():
             "mime": r["mime"] or "",
             "uploaded": r["uploaded_at"],
             "folder_id": r["folder_id"],
+            "is_favorite": bool(r["is_favorite"]),
             "is_image": (r["mime"] or "").startswith("image/"),
             "is_video": (r["mime"] or "").startswith("video/"),
             "is_audio": (r["mime"] or "").startswith("audio/"),
@@ -444,7 +446,7 @@ def api_navigation(section):
     page, per_page, offset = _page_params()
     where = " WHERE " + " AND ".join(clauses)
     total = db_scalar("SELECT COUNT(*) FROM files" + where, params) or 0
-    rows = db_query("SELECT id, file_name, size, mime, uploaded_at, folder_id FROM files" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", params + [per_page, offset])
+    rows = db_query("SELECT id, file_name, size, mime, uploaded_at, folder_id, is_favorite FROM files" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", params + [per_page, offset])
     pages = max(1, (total + per_page - 1) // per_page)
     return jsonify({"section": section, "files": _file_json(rows), "total": total,
                     "page": page, "per_page": per_page, "pages": pages})
@@ -508,13 +510,14 @@ def api_files_by_type(kind):
     page, per_page, offset = _page_params()
     where = " WHERE " + " AND ".join(clauses)
     total = db_scalar("SELECT COUNT(*) FROM files" + where, params) or 0
-    rows = db_query("SELECT id, file_name, size, mime, uploaded_at, folder_id FROM files" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", params + [per_page, offset])
+    rows = db_query("SELECT id, file_name, size, mime, uploaded_at, folder_id, is_favorite FROM files" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", params + [per_page, offset])
     files = []
     for r in rows:
         mime = r["mime"] or ""
         files.append({"id": r["id"], "name": r["file_name"], "size": r["size"],
                       "size_human": human_size(r["size"]), "mime": mime,
                       "uploaded": r["uploaded_at"], "folder_id": r["folder_id"],
+                      "is_favorite": bool(r["is_favorite"]),
                       "is_image": mime.startswith("image/"), "is_video": mime.startswith("video/"),
                       "is_audio": mime.startswith("audio/"), "is_pdf": mime == "application/pdf"})
     pages = max(1, (total + per_page - 1) // per_page)
@@ -855,6 +858,8 @@ html[data-theme="light"] .toggle .knob{right:20px}
 .files-table .owner-badge{background:var(--bg3);padding:3px 10px;border-radius:12px;font-size:.75rem;color:var(--muted)}
 .files-table .act-btn{padding:4px 8px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:1rem;border-radius:4px}
 .files-table .act-btn:hover{color:var(--accent);background:rgba(139,92,246,.1)}
+.files-table .fav-btn{font-size:1.15rem;color:var(--muted)}
+.files-table .fav-btn.active{color:#fbbf24;background:rgba(251,191,36,.12)}
 .del-btn{display:none;border:none;background:none;color:var(--red);cursor:pointer;font-size:.85rem;padding:4px;border-radius:4px}
 .folder-card:hover .del-btn,.files-table tr:hover .del-btn{display:inline-block}
 /* ===== RIGHT SIDEBAR ===== */
@@ -1182,7 +1187,7 @@ function renderFileRows(files,total){
   empty.style.display='none';table.style.display='table';document.getElementById('fileTitle').textContent='File Terbaru';
   var h='';
   for(var i=0;i<files.length;i++){var f=files[i],thumb=f.is_image?'<img src="/api/thumb/'+f.id+'" width="28" height="28" loading="lazy">':'<div class="ficon">'+recentIcon(f,false)+'</div>';
-    h+='<tr onclick="openRecentFile('+f.id+','+f.folder_id+')" style="cursor:pointer"><td><div class="fname-cell">'+thumb+'<span>'+escHtml(f.name)+'</span></div></td><td><span class="owner-badge">Saya</span></td><td>'+f.size_human+'</td><td>'+f.uploaded+'</td><td><a class="act-btn" href="/api/download/'+f.id+'" onclick="event.stopPropagation()" title="Download"><img class="cs-icon sm" src="/icons/ui/download.svg" alt="Download"></a><button class="del-btn" data-action="delFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Hapus">&#10005;</button></td></tr>';}
+    h+='<tr onclick="openRecentFile('+f.id+','+f.folder_id+')" style="cursor:pointer"><td><div class="fname-cell">'+thumb+'<span>'+escHtml(f.name)+'</span></div></td><td><span class="owner-badge">Saya</span></td><td>'+f.size_human+'</td><td>'+f.uploaded+'</td><td><button class="act-btn fav-btn '+(f.is_favorite?'active':'')+'" data-action="favorite" data-id="'+f.id+'" title="'+(f.is_favorite?'Hapus dari Favorites':'Tambahkan ke Favorites')+'">'+(f.is_favorite?'&#9733;':'&#9734;')+'</button><a class="act-btn" href="/api/download/'+f.id+'" onclick="event.stopPropagation()" title="Download"><img class="cs-icon sm" src="/icons/ui/download.svg" alt="Download"></a><button class="del-btn" data-action="delFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Pindah ke Trash">&#10005;</button></td></tr>';}
   tbody.innerHTML=h;
 }
 
@@ -1391,10 +1396,17 @@ document.addEventListener('click',function(e){
   var act=btn.getAttribute('data-action'),id=btn.getAttribute('data-id'),name=btn.getAttribute('data-name');
   if(act==='delFolder'){
     if(confirm('Hapus folder "'+name+'" dan semua isinya?'))api('/api/folders/'+id,{method:'DELETE'}).then(function(){loadAll();});
+  }else if(act==='favorite'){
+    toggleFavorite(id);
   }else if(act==='delFile'){
-    if(confirm('Hapus "'+name+'"?'))api('/api/delete/'+id,{method:'DELETE'}).then(function(){loadAll();});
+    if(confirm('Pindahkan "'+name+'" ke Trash? File di Telegram tetap aman dan bisa dipulihkan.'))api('/api/delete/'+id,{method:'DELETE'}).then(function(){loadCurrentView();loadStats();});
   }
 });
+function toggleFavorite(id){
+  api('/api/files/'+id+'/favorite',{method:'POST'}).then(function(d){
+    if(d&&d.ok){loadCurrentView();}
+  });
+}
 
 // Upload
 function triggerUpload(){document.getElementById('fileInput').click();}
