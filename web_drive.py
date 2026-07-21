@@ -744,14 +744,6 @@ def _do_sync(uid):
             return
         print("[SYNC] Drive service built OK", file=sys.stderr, flush=True)
 
-        # CHANNEL is already resolved from the host config at module load. Do not
-        # import web again here: if the host runs as __main__, that executes web.py
-        # a second time and attempts to bind port 8050 again. Telethon stores a
-        # private channel entity as -100<bare_id>, while config uses the bare ID.
-        target = int(CHANNEL)
-        if target > 0:
-            target = -int("100" + str(target))
-
         # telethon_client was still None when this extension imported it. Resolve
         # the live client from the already-running __main__ module without
         # importing/executing web.py again.
@@ -768,6 +760,19 @@ def _do_sync(uid):
             _sync_state["running"] = False
             return
         print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
+
+        # Resolve Telegram channel entity ONCE before the loop.
+        target = int(CHANNEL)
+        if target > 0:
+            target = -int("100" + str(target))
+        try:
+            entity = _run_async_fn(client.get_entity(target))
+            print("[SYNC] Resolved entity: %s id=%s title=%s" % (type(entity).__name__, getattr(entity, 'id', '?'), getattr(entity, 'title', '?')), file=sys.stderr, flush=True)
+        except Exception as ent_err:
+            _sync_state["message"] = "Telegram channel error: %s" % str(ent_err)[:100]
+            _sync_state["running"] = False
+            print("[SYNC] FATAL: get_entity(%s) failed: %s" % (target, ent_err), file=sys.stderr, flush=True)
+            return
 
         # List all files from Google Drive (paginated)
         _sync_state["message"] = "Listing Google Drive files..."
@@ -900,8 +905,7 @@ def _do_sync(uid):
                 size = os.path.getsize(tmp.name)
                 fh_hash = hashlib.md5(name.encode()).hexdigest()[:12]
 
-                # Resolve the cached private-channel entity so access_hash is included.
-                entity = _run_async_fn(client.get_entity(int(target)))
+                # Reuse the entity resolved once before the loop.
                 msg = _run_async_fn(client.send_file(entity, tmp.name, caption="cloud:%d:%s" % (folder_id, name), force_document=True))
                 os.unlink(tmp.name)
                 msg_id = getattr(msg, "id", None)
