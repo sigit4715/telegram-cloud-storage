@@ -287,7 +287,9 @@ def _file_json(rows):
                       "uploaded": r["uploaded_at"], "folder_id": r["folder_id"],
                       "is_favorite": bool(r["is_favorite"]),
                       "is_image": mime.startswith("image/"), "is_video": mime.startswith("video/"),
-                      "is_audio": mime.startswith("audio/"), "is_pdf": mime == "application/pdf"})
+                      "is_audio": mime.startswith("audio/"), "is_pdf": mime == "application/pdf",
+                      "is_office": os.path.splitext(r["file_name"])[1].lower() in (".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"),
+                      "is_text": mime.startswith("text/") or os.path.splitext(r["file_name"])[1].lower() in (".txt", ".csv", ".json", ".log", ".md", ".py", ".js", ".html", ".css", ".xml")})
     return files
 
 @app.route("/api/files")
@@ -410,6 +412,97 @@ def api_preview(fid):
         run_async(telethon_client.download_media(msg.media, file=buf))
         buf.seek(0)
         return send_file(buf, mimetype=r["mime"] or "application/octet-stream")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/stream/<int:fid>")
+@login_required
+def api_stream(fid):
+    """HTTP Range-aware streaming for video/audio playback."""
+    row = db_query("SELECT file_name, msg_id, mime, size FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    r = row[0]
+    mime = (r["mime"] if hasattr(r,"keys") else r[2]) or "application/octet-stream"
+    file_name = r["file_name"] if hasattr(r,"keys") else r[0]
+    msg_id    = r["msg_id"]   if hasattr(r,"keys") else r[1]
+    file_size = r["size"]     if hasattr(r,"keys") else r[3]
+    try:
+        msg = run_async(telethon_client.get_messages(CHANNEL, ids=msg_id))
+        if not msg or not msg.media:
+            return jsonify({"error": "File removed"}), 404
+        buf = io.BytesIO()
+        run_async(telethon_client.download_media(msg.media, file=buf))
+        data = buf.getvalue()
+        total = len(data)
+        range_hdr = request.headers.get("Range")
+        if range_hdr:
+            import re as _re
+            m = _re.match(r"bytes=(\d*)-(\d*)", range_hdr)
+            start = int(m.group(1)) if m.group(1) else 0
+            end   = int(m.group(2)) if m.group(2) else total - 1
+            end   = min(end, total - 1)
+            chunk = data[start:end + 1]
+            resp  = app.response_class(
+                chunk, status=206, mimetype=mime,
+                headers={
+                    "Content-Range":  "bytes %d-%d/%d" % (start, end, total),
+                    "Accept-Ranges":  "bytes",
+                    "Content-Length": str(len(chunk)),
+                    "Content-Disposition": "inline; filename=\"%s\"" % file_name,
+                }
+            )
+            return resp
+        resp = app.response_class(data, status=200, mimetype=mime,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(total),
+                "Content-Disposition": "inline; filename=\"%s\"" % file_name,
+            })
+        return resp
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/office-preview/<int:fid>")
+@login_required
+def api_office_preview(fid):
+    """Convert Office file to PDF via LibreOffice and stream the result."""
+    import subprocess, tempfile as _tf, shutil
+    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    r = row[0]
+    file_name = os.path.basename(r["file_name"] if hasattr(r,"keys") else r[0])
+    msg_id    = r["msg_id"]   if hasattr(r,"keys") else r[1]
+    ext = os.path.splitext(file_name)[1].lower()
+    try:
+        msg = run_async(telethon_client.get_messages(CHANNEL, ids=msg_id))
+        if not msg or not msg.media:
+            return jsonify({"error": "File removed"}), 404
+        buf = io.BytesIO()
+        run_async(telethon_client.download_media(msg.media, file=buf))
+        tmpdir = _tf.mkdtemp(prefix="cspreview_")
+        try:
+            src = os.path.join(tmpdir, file_name)
+            with open(src, "wb") as f:
+                f.write(buf.getvalue())
+            # Detect soffice path
+            soffice = shutil.which("soffice") or shutil.which("libreoffice") or "/usr/bin/soffice"
+            result = subprocess.run(
+                [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, src],
+                capture_output=True, timeout=60
+            )
+            pdf_path = os.path.splitext(src)[0] + ".pdf"
+            if result.returncode != 0 or not os.path.exists(pdf_path):
+                return jsonify({"error": "Konversi gagal: " + result.stderr.decode()[:200]}), 500
+            with open(pdf_path, "rb") as pf:
+                pdf_data = pf.read()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return app.response_class(pdf_data, status=200, mimetype="application/pdf",
+            headers={"Content-Disposition": "inline; filename=\"%s.pdf\"" % os.path.splitext(file_name)[0]})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Konversi timeout"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -546,7 +639,9 @@ def api_files_by_type(kind):
                       "uploaded": r["uploaded_at"], "folder_id": r["folder_id"],
                       "is_favorite": bool(r["is_favorite"]),
                       "is_image": mime.startswith("image/"), "is_video": mime.startswith("video/"),
-                      "is_audio": mime.startswith("audio/"), "is_pdf": mime == "application/pdf"})
+                      "is_audio": mime.startswith("audio/"), "is_pdf": mime == "application/pdf",
+                      "is_office": os.path.splitext(r["file_name"])[1].lower() in (".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"),
+                      "is_text": mime.startswith("text/") or os.path.splitext(r["file_name"])[1].lower() in (".txt", ".csv", ".json", ".log", ".md", ".py", ".js", ".html", ".css", ".xml")})
     pages = max(1, (total + per_page - 1) // per_page)
     return jsonify({"kind": kind, "files": files, "total": total, "page": page,
                     "per_page": per_page, "pages": pages})
@@ -937,7 +1032,10 @@ html[data-theme="light"] .toggle .knob{right:20px}
 #filePreview{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:300;display:none;align-items:center;justify-content:center;flex-direction:column}
 #filePreview.show{display:flex}
 #filePreview img,#filePreview video{max-width:90%;max-height:80vh;border-radius:8px}
-#filePreview .close-btn{position:absolute;top:16px;right:20px;font-size:2rem;color:#fff;cursor:pointer}
+#filePreview .close-btn{position:absolute;top:16px;right:20px;font-size:2rem;color:#fff;cursor:pointer;z-index:2}
+.preview-shell{width:min(1100px,94vw);height:min(86vh,850px);display:flex;flex-direction:column;background:var(--bg2);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 20px 80px #000}
+.preview-head{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--border);color:var(--text);font-weight:700;min-height:46px}.preview-head span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}.preview-download{color:#fff;background:var(--accent);border-radius:7px;padding:7px 11px;text-decoration:none;font-size:.78rem}.preview-body{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#090b16}.preview-body iframe{width:100%;height:100%;border:0}.preview-body video{width:100%;max-height:100%}.preview-body audio{width:min(600px,90%)}.preview-body img{max-width:100%;max-height:100%;object-fit:contain}.preview-text{width:100%;height:100%;box-sizing:border-box;margin:0;padding:18px;white-space:pre-wrap;overflow:auto;color:#d7def5;font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;background:#0b1020}.preview-loading{color:#b9a5ff}.preview-fallback{color:var(--muted);text-align:center;padding:30px}.preview-fallback a{display:inline-block;margin-top:12px}
+@media(max-width:600px){.preview-shell{width:100vw;height:100dvh;border-radius:0}.preview-head{padding-right:55px}.preview-head span{font-size:.8rem}.preview-body video{width:100%}}
 .empty{text-align:center;color:var(--muted);padding:40px 20px}
 #uploadProgress{margin-top:10px;display:none}
 .progress-bar{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:6px}
@@ -1226,7 +1324,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
     </div>
   </div>
 </div>
-<div id="filePreview" onclick="if(event.target===this||event.target.classList.contains('close-btn'))this.classList.remove('show')">
+<div id="filePreview" onclick="if(event.target===this||event.target.classList.contains('close-btn'))closeFilePreview()">
   <span class="close-btn">&times;</span>
   <div id="previewContent"></div>
 </div>
@@ -1447,10 +1545,10 @@ function renderFileRows(files,total){
   var h='';
   for(var i=0;i<files.length;i++){var f=files[i],thumb=f.is_image?'<img src="/api/thumb/'+f.id+'" width="28" height="28" loading="lazy">':'<div class="ficon">'+recentIcon(f,false)+'</div>';
     var trashActions=currentView==='trash'?'<button class="act-btn" data-action="restoreFile" data-id="'+f.id+'" title="Pulihkan">&#8634;</button><button class="del-btn" style="display:inline-block" data-action="purgeFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Hapus permanen dari Telegram">&#10005;</button>':'<button class="act-btn fav-btn '+(f.is_favorite?'active':'')+'" data-action="favorite" data-id="'+f.id+'" title="'+(f.is_favorite?'Hapus dari Favorites':'Tambahkan ke Favorites')+'">'+(f.is_favorite?'&#9733;':'&#9734;')+'</button><a class="act-btn" href="/api/download/'+f.id+'" onclick="event.stopPropagation()" title="Download"><img class="cs-icon sm" src="/icons/ui/download.svg" alt="Download"></a><button class="del-btn" data-action="delFile" data-id="'+f.id+'" data-name="'+escHtml(f.name)+'" title="Pindah ke Trash">&#10005;</button>';
-    h+='<tr onclick="openRecentFile('+f.id+','+f.folder_id+')" style="cursor:pointer"><td><div class="fname-cell">'+thumb+'<span>'+escHtml(f.name)+'</span></div></td><td><span class="owner-badge">Saya</span></td><td>'+f.size_human+'</td><td>'+f.uploaded+'</td><td>'+trashActions+'</td></tr>';}
+    var previewIcon='<button class="act-btn preview-btn" onclick="event.stopPropagation();openFilePreview('+f.id+','+JSON.stringify(f.name||'')+','+JSON.stringify(f.mime||'')+')" title="Preview">&#128065;</button>';
+    h+='<tr onclick="openRecentFile('+f.id+','+f.folder_id+')" style="cursor:pointer"><td><div class="fname-cell">'+thumb+'<span>'+escHtml(f.name)+'</span></div></td><td><span class="owner-badge">Saya</span></td><td>'+f.size_human+'</td><td>'+f.uploaded+'</td><td>'+previewIcon+trashActions+'</td></tr>';}
   tbody.innerHTML=h;
 }
-
 function loadRecentDashboard(){
   currentView='recent';
   currentFolder=-1;
@@ -1735,20 +1833,32 @@ function moveSelected(){
 }
 function doMove(tf){var ids=[];selectedIds.forEach(function(id){ids.push(parseInt(id));});api('/api/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:ids,folder_id:tf})}).then(function(){closeModal('moveModal');selectedIds.clear();loadAll();updateSelectedCount();toggleSelectMode();});}
 
-// Preview
+// Preview: image, video, audio, PDF, text/code, and Office via server-side PDF conversion.
+function closeFilePreview(){var box=document.getElementById('filePreview'),el=document.getElementById('previewContent');box.classList.remove('show');el.innerHTML='';}
+function previewShell(id,name,body){return '<div class="preview-shell"><div class="preview-head"><span>'+escHtml(name)+'</span><a class="preview-download" href="/api/download/'+id+'">Download</a></div><div class="preview-body">'+body+'</div></div>';}
+function openFilePreview(id,name,mime){
+  name=name||'File';mime=mime||'';var n=name.toLowerCase(),el=document.getElementById('previewContent');
+  var office=n.match(/[.](doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp)$/);
+  var text=mime.indexOf('text/')===0||n.match(/[.](txt|csv|json|log|md|py|js|html|css|xml)$/);
+  var body='';
+  if(mime.indexOf('image/')===0||/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/.test(n))body='<img src="/api/stream/'+id+'" alt="">';
+  else if(mime.indexOf('video/')===0||/\.(mp4|webm|mov|mkv|avi|m4v)$/.test(n))body='<video src="/api/stream/'+id+'" controls playsinline preload="metadata"></video>';
+  else if(mime.indexOf('audio/')===0||/\.(mp3|wav|ogg|m4a|aac|flac|opus)$/.test(n))body='<audio src="/api/stream/'+id+'" controls preload="metadata"></audio>';
+  else if(mime==='application/pdf'||n.endsWith('.pdf'))body='<iframe src="/api/stream/'+id+'#toolbar=1"></iframe>';
+  else if(office)body='<iframe src="/api/office-preview/'+id+'#toolbar=1"></iframe>';
+  else if(text){body='<pre class="preview-text preview-loading">Memuat isi file...</pre>';}
+  else body='<div class="preview-fallback">Format ini belum mendukung preview.<br><a class="preview-download" href="/api/download/'+id+'">Download file</a></div>';
+  el.innerHTML=previewShell(id,name,body);document.getElementById('filePreview').classList.add('show');
+  if(text)fetch('/api/stream/'+id).then(function(r){if(!r.ok)throw Error('HTTP '+r.status);return r.text();}).then(function(t){var p=el.querySelector('.preview-text');if(p){p.classList.remove('preview-loading');p.textContent=t.slice(0,200000)+(t.length>200000?'\n\n[Preview dibatasi 200.000 karakter]':'');}}).catch(function(e){var p=el.querySelector('.preview-text');if(p)p.textContent='Preview gagal: '+e.message;});
+}
 function openRecentFile(id,folderId){currentFolder=folderId;openFile(id);}
 function openFile(id){
-  api('/api/files?page=1&folder_id='+currentFolder).then(function(d){
+  api('/api/files?page=1&per_page=100&folder_id='+currentFolder).then(function(d){
     if(!d||!d.files)return;var file=d.files.find(function(f){return f.id===id;});if(!file)return;
-    var el=document.getElementById('previewContent');
-    if(file.is_image){el.innerHTML='<img src="/api/preview/'+id+'" style="max-width:90vw;max-height:80vh">';}
-    else if(file.is_video){el.innerHTML='<video src="/api/preview/'+id+'" controls style="max-width:90vw;max-height:80vh"></video>';}
-    else if(file.is_audio){el.innerHTML='<audio src="/api/preview/'+id+'" controls></audio>';}
-    else if(file.is_pdf){el.innerHTML='<iframe src="/api/preview/'+id+'" style="width:90vw;height:85vh;border:none;border-radius:8px"></iframe>';}
-    else{location.href='/api/download/'+id;return;}
-    document.getElementById('filePreview').classList.add('show');
+    openFilePreview(file.id,file.name,file.mime||'');
   });
 }
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeFilePreview();});
 
 init();
 </script>
