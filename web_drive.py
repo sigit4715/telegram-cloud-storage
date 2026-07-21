@@ -749,10 +749,13 @@ def _do_sync(uid):
         # importing/executing web.py again.
         client = globals().get("telethon_client")
         _run_async_fn = globals().get("run_async")
+        host_channel = CHANNEL
         try:
             import __main__ as _host
             client = getattr(_host, "telethon_client", client)
             _run_async_fn = getattr(_host, "run_async", _run_async_fn)
+            # web.py is executed as __main__; its config is authoritative.
+            host_channel = getattr(_host, "CHANNEL", host_channel)
         except Exception:
             pass
         if not client or not _run_async_fn:
@@ -762,7 +765,12 @@ def _do_sync(uid):
         print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
 
         # Resolve Telegram channel entity ONCE before the loop.
-        target = int(CHANNEL)
+        target = int(host_channel)
+        if target <= 0:
+            _sync_state["message"] = "Telegram channel belum dikonfigurasi"
+            _sync_state["running"] = False
+            print("[SYNC] FATAL: invalid host CHANNEL=%r" % (host_channel,), file=sys.stderr, flush=True)
+            return
         if target > 0:
             target = -int("100" + str(target))
         try:
