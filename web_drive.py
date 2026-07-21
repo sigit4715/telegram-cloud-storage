@@ -43,6 +43,7 @@ import sys
 import sqlite3
 import secrets
 import threading
+import time as _time
 import mimetypes
 from datetime import datetime, timedelta, timezone
 
@@ -98,7 +99,7 @@ except Exception:  # pragma: no cover
     _HAS_GOOGLE = False
 
 # Drive API scopes
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/photoslibrary.readonly", "openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/photoslibrary.readonly", "https://www.googleapis.com/auth/photospicker.mediaitems.readonly", "openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
 
 # Channel target (use the configured one; fall back to "me" in tests)
 CHANNEL = int(cfg.get("CHANNEL", "0"))
@@ -582,6 +583,14 @@ def gdrive_disconnect():
     db_exec("DELETE FROM google_tokens WHERE user_id=?", (uid,))
     return jsonify({"ok": True, "connected": False})
 
+# Sync state (must be initialized before route handlers)
+_sync_state = {
+    "running": False, "uid": "", "total": 0, "done": 0, "errors": [],
+    "imported": 0, "message": "", "files": [], "updated_at": 0,
+    "pause_event": threading.Event(), "cancel_flag": False, "current": ""
+}
+_sync_state["pause_event"].set()
+
 @drive_ext.route("/api/gdrive/sync", methods=["GET"])
 def gdrive_sync_start():
     uid = session.get("user_id")
@@ -647,6 +656,19 @@ def gdrive_sync_resume():
     print("[SYNC] Resumed by user", file=sys.stderr, flush=True)
     return jsonify({"ok": True, "paused": False})
 
+@drive_ext.route("/api/gdrive/sync/cancel")
+def gdrive_sync_cancel():
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "not logged in"}), 401
+    if not _sync_state["running"]:
+        return jsonify({"ok": False, "message": "Sync not running"})
+    _sync_state["cancel_flag"] = True
+    _sync_state["pause_event"].set()
+    _sync_state["message"] = "Cancelling..."
+    _sync_state["updated_at"] = _time.time()
+    return jsonify({"ok": True, "cancelled": True})
+
 @drive_ext.route("/api/gdrive/sync/retry")
 def gdrive_sync_retry():
     uid = session.get("user_id")
@@ -662,6 +684,226 @@ def gdrive_sync_retry():
     t.start()
     return jsonify({"ok": True, "status": "started", "count": len(errors)})
 
+def _do_sync(uid):
+    """Sync all Google Drive files to Telegram storage."""
+    global _sync_state
+    _sync_state = {
+        "running": True, "uid": uid, "total": 0, "done": 0, "errors": [],
+        "imported": 0, "message": "Connecting to Google Drive...", "files": [],
+        "updated_at": _time.time(), "pause_event": threading.Event(),
+        "cancel_flag": False, "current": ""
+    }
+    _sync_state["pause_event"].set()
+    try:
+        import sys, io, os, tempfile, hashlib
+        from googleapiclient.http import MediaIoBaseDownload
+
+        print("[SYNC] Building Drive service for uid=%s..." % uid, file=sys.stderr, flush=True)
+        service = _build_drive_service(uid)
+        if not service:
+            _sync_state["message"] = "Google Drive not connected"
+            _sync_state["running"] = False
+            print("[SYNC] Drive service is None - not connected", file=sys.stderr, flush=True)
+            return
+        print("[SYNC] Drive service built OK", file=sys.stderr, flush=True)
+
+        # CHANNEL is already resolved from the host config at module load. Do not
+        # import web again here: if the host runs as __main__, that executes web.py
+        # a second time and attempts to bind port 8050 again. Telethon stores a
+        # private channel entity as -100<bare_id>, while config uses the bare ID.
+        target = int(CHANNEL)
+        if target > 0:
+            target = -int("100" + str(target))
+
+        # telethon_client was still None when this extension imported it. Resolve
+        # the live client from the already-running __main__ module without
+        # importing/executing web.py again.
+        client = globals().get("telethon_client")
+        _run_async_fn = globals().get("run_async")
+        try:
+            import __main__ as _host
+            client = getattr(_host, "telethon_client", client)
+            _run_async_fn = getattr(_host, "run_async", _run_async_fn)
+        except Exception:
+            pass
+        if not client or not _run_async_fn:
+            _sync_state["message"] = "Telegram client not ready"
+            _sync_state["running"] = False
+            return
+        print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
+
+        # List all files from Google Drive (paginated)
+        _sync_state["message"] = "Listing Google Drive files..."
+        all_files = []
+        page_token = None
+        print("[SYNC] Listing Drive files...", file=sys.stderr, flush=True)
+        while True:
+            resp = service.files().list(
+                q="trashed=false",
+                fields="nextPageToken, files(id, name, mimeType, size, parents)",
+                pageSize=1000,
+                pageToken=page_token,
+            ).execute()
+            all_files.extend(resp.get("files", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+        # Filter to files only (skip folders)
+        drive_files = [f for f in all_files if not f.get("mimeType", "").endswith(".folder")]
+        print("[SYNC] Listed %d total files, %d non-folder" % (len(all_files), len(drive_files)), file=sys.stderr, flush=True)
+        print("[SYNC] Found %d files on Google Drive" % len(drive_files), file=sys.stderr, flush=True)
+
+        # Every account gets a dedicated backup root; never write sync results to Home.
+        safe_email = str(uid).strip().lower().replace("/", "_").replace("\\", "_")
+        backup_name = "Backup - " + safe_email
+        db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, 0)", (backup_name,))
+        backup_rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0", (backup_name,))
+        if not backup_rows:
+            raise RuntimeError("Backup folder could not be created")
+        backup_folder_id = backup_rows[0]["id"] if hasattr(backup_rows[0], "keys") else backup_rows[0][0]
+        print("[SYNC] Backup root: %s (folder_id=%s)" % (backup_name, backup_folder_id), file=sys.stderr, flush=True)
+
+        # Build folder mapping (Drive folder ID -> DB folder ID) under this backup root.
+        folder_by_id = {}
+        drive_folders = [f for f in all_files if f.get("mimeType", "").endswith(".folder")]
+        db_folders = db_query("SELECT id, name FROM folders WHERE parent_id=?", (backup_folder_id,))
+        db_name_map = {(r["name"] if hasattr(r, "keys") else r[1]): (r["id"] if hasattr(r, "keys") else r[0]) for r in db_folders}
+
+        for ff in drive_folders:
+            fname = ff.get("name", "")
+            if fname in db_name_map:
+                folder_by_id[ff["id"]] = db_name_map[fname]
+
+        def _get_db_folder(drive_folder_id):
+            if drive_folder_id in folder_by_id:
+                return folder_by_id[drive_folder_id]
+            # Try to find/create by name
+            for ff in drive_folders:
+                if ff["id"] == drive_folder_id:
+                    fname = ff.get("name", "Unknown")
+                    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, ?)", (fname, backup_folder_id))
+                    row = db_query("SELECT id FROM folders WHERE name=? AND parent_id=?", (fname, backup_folder_id))
+                    if row:
+                        fid = row[0]["id"] if hasattr(row[0], "keys") else row[0][0]
+                        folder_by_id[drive_folder_id] = fid
+                        return fid
+            return backup_folder_id
+
+        # Find files already in DB (by file_name)
+        existing_names = set()
+        for r in db_query("SELECT file_name FROM files"):
+            existing_names.add(r["file_name"] if hasattr(r, "keys") else r[0])
+
+        missing = [f for f in drive_files if f.get("name", "") not in existing_names]
+        print("[SYNC] %d files to sync (%d already in DB)" % (len(missing), len(drive_files) - len(missing)), file=sys.stderr, flush=True)
+        print("[SYNC] %d files to sync (%d already in DB)" % (len(missing), len(drive_files) - len(missing)), file=sys.stderr, flush=True)
+
+        _sync_state["total"] = len(missing)
+        _sync_state["message"] = "Syncing %d files..." % len(missing)
+
+        if not missing:
+            _sync_state["message"] = "All files already synced!"
+            _sync_state["running"] = False
+            return
+
+        for i, f in enumerate(missing):
+            # --- Pause / Cancel controls ---
+            if _sync_state["cancel_flag"]:
+                print("[SYNC] Cancel flag set, stopping at %d/%d" % (i, len(missing)), file=sys.stderr, flush=True)
+                _sync_state["message"] = "Cancelled at %d/%d (%d imported, %d errors)" % (
+                    i, len(missing), _sync_state["imported"], len(_sync_state["errors"]))
+                _sync_state["running"] = False
+                return
+            _sync_state["pause_event"].wait()
+
+            try:
+                name = f.get("name", "unknown")
+                _sync_state["current"] = name
+                _sync_state["message"] = "[%d/%d] %s" % (i+1, len(missing), name)
+                _sync_state["done"] = i
+                _sync_state["updated_at"] = _time.time()
+                print("[SYNC] Processing %d/%d: %s" % (i+1, len(missing), name), file=sys.stderr, flush=True)
+
+                folder_id = backup_folder_id
+                pr = f.get("parents") or []
+                if pr:
+                    try:
+                        folder_id = _get_db_folder(pr[0])
+                    except Exception as fe:
+                        print("[SYNC] folder resolve failed: %s" % fe, file=sys.stderr, flush=True)
+                        folder_id = backup_folder_id
+
+                mime = f.get("mimeType", "")
+                if mime.startswith("application/vnd.google-apps."):
+                    export_map = {
+                        "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
+                        "application/vnd.google-apps.spreadsheet": ("application/pdf", ".pdf"),
+                        "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
+                        "application/vnd.google-apps.script": ("text/plain", ".txt"),
+                    }
+                    exp_mime, exp_ext = export_map.get(mime, ("application/pdf", ".pdf"))
+                    req_dl = service.files().export_media(fileId=f["id"], mimeType=exp_mime)
+                    if not os.path.splitext(name)[1]:
+                        name = name + exp_ext
+                else:
+                    req_dl = service.files().get_media(fileId=f["id"])
+                fh = io.BytesIO()
+                dl = MediaIoBaseDownload(fh, req_dl)
+                done_chunk = False
+                while not done_chunk:
+                    status, done_chunk = dl.next_chunk()
+                fh.seek(0)
+
+                ext = os.path.splitext(name)[1] or ".bin"
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                tmp.write(fh.read())
+                tmp.close()
+
+                size = os.path.getsize(tmp.name)
+                fh_hash = hashlib.md5(name.encode()).hexdigest()[:12]
+
+                # Resolve the cached private-channel entity so access_hash is included.
+                entity = _run_async_fn(client.get_entity(int(target)))
+                msg = _run_async_fn(client.send_file(entity, tmp.name, caption="cloud:%d:%s" % (folder_id, name), force_document=True))
+                os.unlink(tmp.name)
+                msg_id = getattr(msg, "id", None)
+                db_exec(
+                    "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id) VALUES (?,?,?,?,?,?)",
+                    (name, msg_id, size, f.get("mimeType", "") or "application/octet-stream", fh_hash, folder_id)
+                )
+                _sync_state["imported"] += 1
+                _sync_state["done"] = i + 1
+                _sync_state["updated_at"] = _time.time()
+                _sync_state["files"].append({"name": name, "ok": True})
+                print("[SYNC] Uploaded %s -> folder_id=%s (%d/%d)" % (name, folder_id, i+1, len(missing)), file=sys.stderr, flush=True)
+
+            except Exception as e:
+                _err_name = f.get("name", "?")
+                _err_drive_id = f.get("id", "")
+                print("[SYNC] ERROR on %s: %s" % (_err_name, e), file=sys.stderr, flush=True)
+                _sync_state["errors"].append("%s: %s" % (_err_name, str(e)[:80]))
+                _sync_state["files"].append({"name": _err_name, "ok": False, "error": str(e)[:60]})
+                try:
+                    db_exec(
+                        "INSERT INTO sync_errors (drive_file_id, file_name, error_msg, folder_id) VALUES (?,?,?,?)",
+                        (_err_drive_id, _err_name, str(e)[:200], folder_id)
+                    )
+                except Exception:
+                    pass
+
+        _sync_state["done"] = len(missing)
+        _sync_state["message"] = "Done! %d imported, %d errors" % (_sync_state["imported"], len(_sync_state["errors"]))
+        _sync_state["current"] = ""
+        _sync_state["running"] = False
+
+    except Exception as e:
+        import traceback
+        print("[SYNC] FATAL: %s" % e, file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        _sync_state["message"] = "Error: %s" % str(e)
+        _sync_state["running"] = False
+
 def _do_retry(uid, errors):
     global _sync_state
     _sync_state = {
@@ -671,9 +913,23 @@ def _do_retry(uid, errors):
     }
     _sync_state["pause_event"].set()
     try:
-        import sys, io, os, tempfile
+        import sys, io, os, tempfile, hashlib
         from googleapiclient.http import MediaIoBaseDownload
-        from telethon import TelegramClient as _TC
+
+        service = _build_drive_service(uid)
+        if not service:
+            _sync_state["message"] = "Google Drive not connected"
+            _sync_state["running"] = False
+            return
+
+        target = CHANNEL
+        try:
+            from web import CHANNEL as _cfg_ch
+            if _cfg_ch and str(_cfg_ch) not in ("", "me", "__AUTO_CREATE__"):
+                target = _cfg_ch
+        except Exception:
+            pass
+
         # Reuse existing telethon_client + run_async from web.py
         client = globals().get("telethon_client")
         _run_async_fn = globals().get("run_async")
@@ -682,6 +938,10 @@ def _do_retry(uid, errors):
             _sync_state["running"] = False
             return
         print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
+
+        missing = errors  # errors list has same shape: [{drive_file_id, file_name, folder_id}]
+        folder_by_id = {}
+        _get_db_folder = lambda x: 3
 
         for i, f in enumerate(missing):
                 # --- Pause / Cancel controls ---
@@ -865,6 +1125,11 @@ def photos_page():
     if not session.get("user_id"):
         return redirect(url_for("login_page"))
     return PHOTOS_HTML
+
+# Backward-compatible alias for older dashboard links/bookmarks.
+@drive_ext.route("/gphotos")
+def photos_page_legacy():
+    return redirect(url_for("drive_ext.photos_page"))
 
 # ----------------------------------------------------------------------------
 # HTML TEMPLATES
@@ -1424,10 +1689,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
     <div id="connectedSection" style="display:none">
       <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-        <span style="color:var(--green);font-size:13px;padding:8px 0">📁 Google Drive — Browse foto dari Drive</span>
+        <button class="btn ghost tab-btn active-tab" id="tabPicker" type="button" onclick="showTab('picker')">🖼️ Google Photos Picker</button>
+        <button class="btn ghost tab-btn" id="tabDrive" type="button" onclick="showTab('drive')">📁 Foto dari Drive</button>
       </div>
 
-      <div id="pickerPanel" style="display:none">
+      <div id="pickerPanel">
         <div class="pick-section">
           <button class="btn" id="pickBtn" onclick="openPicker()">🖼️ Pilih Foto dari Google Photos</button>
           <span class="selected-info" id="selInfo">Belum ada foto dipilih.</span>
@@ -1435,7 +1701,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
         </div>
       </div>
 
-      <div id="drivePanel">
+      <div id="drivePanel" style="display:none">
         <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Foto & video dari Google Drive (termasuk backup Google Photos yang sync ke Drive).</p>
         <button class="btn" id="driveListBtn" onclick="loadDrivePhotos()">📁 Muat Foto dari Drive</button>
         <span class="selected-info" id="driveStatus"></span>
@@ -1465,12 +1731,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     </div>
 
     <div class="help">
-      <strong>Setup Google Cloud:</strong><br>
-      1. Buat project di <code>console.cloud.google.com</code><br>
-      2. Enable <code>Google Photos Library API</code> & <code>Google Picker API</code><br>
-      3. Credentials → OAuth client ID (Web application) → add redirect <code>/api/photos/auth</code><br>
-      4. Masukkan <code>PHOTOS_CLIENT_ID</code> & <code>PHOTOS_CLIENT_SECRET</code> ke <code>config.env</code><br>
-      5. Tambahkan akun Google Anda sebagai Test User di OAuth consent screen
+      <strong>Google Photos Picker:</strong><br>
+      Pilih foto/video di jendela resmi Google, lalu kembali ke halaman ini untuk mengimpornya ke Telegram.<br>
+      Jika Google meminta izin baru, setujui akses <code>Google Photos Picker API</code>.
     </div>
     <a class="back" href="/files">← Kembali ke Drive</a>
   </div>
@@ -1754,19 +2017,8 @@ def photos_status():
     uid = session.get("user_id")
     if not uid:
         return jsonify({"error": "not logged in"}), 401
-    row = db_query("SELECT access_token, token_expiry FROM google_tokens WHERE user_id=?", (uid,))
-    if not row:
-        return jsonify({"connected": False})
-    connected = True
-    try:
-        exp = datetime.fromisoformat(row[0]["token_expiry"])
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        if exp <= datetime.now(timezone.utc):
-            connected = False
-    except Exception:
-        connected = False
-    return jsonify({"connected": connected})
+    creds = _get_photos_credentials(uid)
+    return jsonify({"connected": bool(creds and creds.valid)})
 
 @drive_ext.route("/api/photos/disconnect", methods=["POST"])
 def photos_disconnect():
@@ -1782,7 +2034,7 @@ def photos_drive_list():
     if not uid:
         return jsonify({"error": "not logged in"}), 401
     
-    creds = _get_gdrive_credentials(uid)
+    creds = _get_credentials(uid)
     if not creds:
         return jsonify({"error": "not connected"}), 401
     
@@ -2044,9 +2296,14 @@ def photos_picker_import():
         return jsonify({"error": "failed to get items"}), 500
     if item_ids:
         items = [i for i in items if i.get("id") in item_ids]
-    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, 0)", ("Google Photos",))
-    rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0", ("Google Photos",))
-    folder_id = rows[0]["id"] if rows else 0
+    # Keep Picker imports inside the account's existing backup root, never Home.
+    backup_name = "Backup - " + uid
+    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, 0)", (backup_name,))
+    root_rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0", (backup_name,))
+    backup_root_id = root_rows[0]["id"] if root_rows else 0
+    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, ?)", ("Google Photos", backup_root_id))
+    rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=?", ("Google Photos", backup_root_id))
+    folder_id = rows[0]["id"] if rows else backup_root_id
     imported = 0
     errors = []
     for item in items:

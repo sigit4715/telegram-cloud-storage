@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<path d="M5 2h9l5 5v15H5z" fill="#8B5CF6"/>
+<path d="M14 2v6h5" fill="none" stroke="rgba(255,255,255,.68)" stroke-width="1.2"/>
+<rect x="3.5" y="12" width="17" height="6.4" rx="2" fill="rgba(15,23,42,.34)"/>
+<text x="12" y="16.6" text-anchor="middle" font-family="Arial, sans-serif" font-size="3.2" font-weight="700" fill="white">RAR</text>
+</svg>
