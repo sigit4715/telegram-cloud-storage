@@ -163,13 +163,43 @@ def init_drive_db():
     )""")
     db_exec("""CREATE TABLE IF NOT EXISTS sync_errors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        drive_file_id TEXT UNIQUE NOT NULL,
+        drive_file_id TEXT NOT NULL,
         file_name TEXT NOT NULL,
         error_msg TEXT,
         folder_id INTEGER NOT NULL DEFAULT 0,
+        owner_email TEXT NOT NULL DEFAULT '',
         resolved INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        UNIQUE(owner_email, drive_file_id)
     )""")
+    # Upgrade existing sync error records for per-account retry isolation.
+    cols = [r["name"] if hasattr(r, "keys") else r[1] for r in db_query("PRAGMA table_info(sync_errors)")]
+    if "owner_email" not in cols:
+        db_exec("ALTER TABLE sync_errors ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
+    db_exec("UPDATE sync_errors SET owner_email=? WHERE owner_email=''", ("bowor4751@gmail.com",))
+    # Legacy sync_errors used a global UNIQUE(drive_file_id), which would make
+    # one user's failed Drive item hide another user's retry state. Rebuild it
+    # with a per-owner unique key once, preserving all existing records.
+    sync_sql = db_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_errors'") or ""
+    if "UNIQUE(owner_email, drive_file_id)" not in sync_sql.replace("\n", " "):
+        db_exec("ALTER TABLE sync_errors RENAME TO sync_errors_legacy_owner_migration")
+        db_exec("""CREATE TABLE sync_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            drive_file_id TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            error_msg TEXT,
+            folder_id INTEGER NOT NULL DEFAULT 0,
+            owner_email TEXT NOT NULL DEFAULT '',
+            resolved INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            UNIQUE(owner_email, drive_file_id)
+        )""")
+        db_exec("""INSERT INTO sync_errors
+                   (id, drive_file_id, file_name, error_msg, folder_id, owner_email, resolved, created_at)
+                   SELECT id, drive_file_id, file_name, error_msg, folder_id, owner_email, resolved, created_at
+                   FROM sync_errors_legacy_owner_migration""")
+        db_exec("DROP TABLE sync_errors_legacy_owner_migration")
+    db_exec("CREATE INDEX IF NOT EXISTS idx_sync_errors_owner ON sync_errors(owner_email, resolved)")
     db_exec("DELETE FROM google_oauth_states WHERE created_at < ?", (int(_time.time()) - 900,))
 
 # ----------------------------------------------------------------------------
@@ -320,6 +350,8 @@ def api_profile_photo_post():
 
 @drive_ext.route("/api/profile/photo/<user_id>")
 def api_profile_photo(user_id):
+    if session.get("user_id") != user_id:
+        return jsonify({"error": "forbidden"}), 403
     row = db_query("SELECT photo_path FROM user_profiles WHERE user_id=?", (user_id,))
     if not row or not row[0]["photo_path"]:
         return jsonify({"error": "no photo"}), 404
@@ -489,13 +521,8 @@ def gdrive_callback():
         email = user_info.get("email", "").lower()
         name = user_info.get("name", "")
         picture = user_info.get("picture", "")
-        # Check allowlist — import from web module
-        import sys as _sys
-        _web = _sys.modules.get("web")
-        google_allowed = set(x.strip().lower() for x in (_web.cfg.get("GOOGLE_ALLOWED_EMAILS", "") if hasattr(_web, "cfg") else "").split(",") if x.strip()) if hasattr(_web, "cfg") else {"bowor4751@gmail.com"}
-        allowed = set(x.strip() for x in (_web.cfg.get("ALLOWED_USERS", "") if hasattr(_web, "cfg") else "").split(",") if x.strip()) if hasattr(_web, "cfg") else set()
-        if email not in google_allowed and email not in allowed:
-            return redirect("/login?error=email_not_allowed&email=" + email)
+        # Login is intentionally open to verified Google accounts. Each account
+        # is isolated by owner_email in the Cloud Storage database.
         session["google_email"] = email
         session["google_name"] = name
         session["google_picture"] = picture
@@ -632,7 +659,9 @@ def gdrive_sync_start():
     if not uid:
         return jsonify({"error": "not logged in"}), 401
     if _sync_state["running"]:
-        return jsonify({"ok": True, "status": "running", "message": "Sync sedang berjalan..."})
+        if _sync_state.get("uid") == uid:
+            return jsonify({"ok": True, "status": "running", "message": "Sync sedang berjalan..."})
+        return jsonify({"error": "Sync sedang berjalan untuk akun lain; coba lagi nanti"}), 409
     t = threading.Thread(target=_do_sync, args=(uid,), daemon=True)
     t.start()
     return jsonify({"ok": True, "status": "started"})
@@ -643,28 +672,29 @@ def gdrive_sync_status():
     if not uid:
         return jsonify({"error": "not logged in"}), 401
     # Auto-detect stuck sync (no update for >10 min)
-    if _sync_state["running"] and _sync_state["updated_at"] > 0:
+    if _sync_state["running"] and _sync_state.get("uid") == uid and _sync_state["updated_at"] > 0:
         if (_time.time() - _sync_state["updated_at"]) > 600:
             print("[SYNC] Detected stuck sync, auto-resetting", flush=True)
             _sync_state["running"] = False
             _sync_state["message"] = "Sync terhenti (timeout). Silakan coba lagi."
+    own_sync = _sync_state.get("uid") == uid
     pct = 0
-    if _sync_state["total"] > 0:
+    if own_sync and _sync_state["total"] > 0:
         pct = int((_sync_state["done"] * 100) / _sync_state["total"])
-    storage_total = db_scalar("SELECT COUNT(*) FROM files") or 0
+    storage_total = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL", (uid,)) or 0
     return jsonify({
-        "running": _sync_state["running"],
+        "running": bool(own_sync and _sync_state["running"]),
         "storage_total": storage_total,
-        "total": _sync_state["total"],
-        "done": _sync_state["done"],
-        "imported": _sync_state["imported"],
-        "errors_count": len(_sync_state["errors"]),
-        "errors": _sync_state["errors"][:10],
-        "message": _sync_state["message"],
+        "total": _sync_state["total"] if own_sync else 0,
+        "done": _sync_state["done"] if own_sync else 0,
+        "imported": _sync_state["imported"] if own_sync else 0,
+        "errors_count": len(_sync_state["errors"]) if own_sync else 0,
+        "errors": _sync_state["errors"][:10] if own_sync else [],
+        "message": _sync_state["message"] if own_sync else "",
         "percent": pct,
-        "files": _sync_state["files"][-20:],
-        "paused": (not _sync_state["pause_event"].is_set()) if _sync_state["running"] else False,
-        "current": _sync_state.get("current", "")
+        "files": _sync_state["files"][-20:] if own_sync else [],
+        "paused": (not _sync_state["pause_event"].is_set()) if own_sync and _sync_state["running"] else False,
+        "current": _sync_state.get("current", "") if own_sync else ""
     })
 
 @drive_ext.route("/api/gdrive/sync/pause")
@@ -672,8 +702,8 @@ def gdrive_sync_pause():
     uid = session.get("user_id")
     if not uid:
         return jsonify({"error": "not logged in"}), 401
-    if not _sync_state["running"]:
-        return jsonify({"ok": False, "message": "Sync not running"})
+    if not _sync_state["running"] or _sync_state.get("uid") != uid:
+        return jsonify({"ok": False, "message": "Sync not running for this account"}), 409
     _sync_state["pause_event"].clear()
     _sync_state["message"] = "Paused"
     _sync_state["updated_at"] = _time.time()
@@ -685,8 +715,8 @@ def gdrive_sync_resume():
     uid = session.get("user_id")
     if not uid:
         return jsonify({"error": "not logged in"}), 401
-    if not _sync_state["running"]:
-        return jsonify({"ok": False, "message": "Sync not running"})
+    if not _sync_state["running"] or _sync_state.get("uid") != uid:
+        return jsonify({"ok": False, "message": "Sync not running for this account"}), 409
     _sync_state["pause_event"].set()
     _sync_state["message"] = "Resumed"
     _sync_state["updated_at"] = _time.time()
@@ -698,8 +728,8 @@ def gdrive_sync_cancel():
     uid = session.get("user_id")
     if not uid:
         return jsonify({"error": "not logged in"}), 401
-    if not _sync_state["running"]:
-        return jsonify({"ok": False, "message": "Sync not running"})
+    if not _sync_state["running"] or _sync_state.get("uid") != uid:
+        return jsonify({"ok": False, "message": "Sync not running for this account"}), 409
     _sync_state["cancel_flag"] = True
     _sync_state["pause_event"].set()
     _sync_state["message"] = "Cancelling..."
@@ -712,9 +742,9 @@ def gdrive_sync_retry():
     if not uid:
         return jsonify({"error": "not logged in"}), 401
     if _sync_state["running"]:
-        return jsonify({"ok": False, "message": "Sync sedang berjalan"})
+        return jsonify({"ok": False, "message": "Sync sedang berjalan"}), 409
     # Get unresolved errors
-    errors = db_query("SELECT drive_file_id, file_name, folder_id FROM sync_errors WHERE resolved=0")
+    errors = db_query("SELECT drive_file_id, file_name, folder_id FROM sync_errors WHERE resolved=0 AND owner_email=?", (uid,))
     if not errors:
         return jsonify({"ok": False, "message": "Tidak ada file gagal"})
     t = threading.Thread(target=_do_retry, args=(uid, errors), daemon=True)
@@ -807,8 +837,8 @@ def _do_sync(uid):
         # Every account gets a dedicated backup root; never write sync results to Home.
         safe_email = str(uid).strip().lower().replace("/", "_").replace("\\", "_")
         backup_name = "Backup - " + safe_email
-        db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, 0)", (backup_name,))
-        backup_rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0", (backup_name,))
+        db_exec("INSERT OR IGNORE INTO folders (name, parent_id, owner_email) VALUES (?, 0, ?)", (backup_name, uid))
+        backup_rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0 AND owner_email=?", (backup_name, uid))
         if not backup_rows:
             raise RuntimeError("Backup folder could not be created")
         backup_folder_id = backup_rows[0]["id"] if hasattr(backup_rows[0], "keys") else backup_rows[0][0]
@@ -817,7 +847,7 @@ def _do_sync(uid):
         # Build folder mapping (Drive folder ID -> DB folder ID) under this backup root.
         folder_by_id = {}
         drive_folders = [f for f in all_files if f.get("mimeType", "").endswith(".folder")]
-        db_folders = db_query("SELECT id, name FROM folders WHERE parent_id=?", (backup_folder_id,))
+        db_folders = db_query("SELECT id, name FROM folders WHERE parent_id=? AND owner_email=?", (backup_folder_id, uid))
         db_name_map = {(r["name"] if hasattr(r, "keys") else r[1]): (r["id"] if hasattr(r, "keys") else r[0]) for r in db_folders}
 
         for ff in drive_folders:
@@ -832,8 +862,8 @@ def _do_sync(uid):
             for ff in drive_folders:
                 if ff["id"] == drive_folder_id:
                     fname = ff.get("name", "Unknown")
-                    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, ?)", (fname, backup_folder_id))
-                    row = db_query("SELECT id FROM folders WHERE name=? AND parent_id=?", (fname, backup_folder_id))
+                    db_exec("INSERT OR IGNORE INTO folders (name, parent_id, owner_email) VALUES (?, ?, ?)", (fname, backup_folder_id, uid))
+                    row = db_query("SELECT id FROM folders WHERE name=? AND parent_id=? AND owner_email=?", (fname, backup_folder_id, uid))
                     if row:
                         fid = row[0]["id"] if hasattr(row[0], "keys") else row[0][0]
                         folder_by_id[drive_folder_id] = fid
@@ -842,7 +872,7 @@ def _do_sync(uid):
 
         # Find files already in DB (by file_name)
         existing_names = set()
-        for r in db_query("SELECT file_name FROM files"):
+        for r in db_query("SELECT file_name FROM files WHERE owner_email=?", (uid,)):
             existing_names.add(r["file_name"] if hasattr(r, "keys") else r[0])
 
         missing = [f for f in drive_files if f.get("name", "") not in existing_names]
@@ -918,8 +948,8 @@ def _do_sync(uid):
                 os.unlink(tmp.name)
                 msg_id = getattr(msg, "id", None)
                 db_exec(
-                    "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id) VALUES (?,?,?,?,?,?)",
-                    (name, msg_id, size, f.get("mimeType", "") or "application/octet-stream", fh_hash, folder_id)
+                    "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id, owner_email) VALUES (?,?,?,?,?,?,?)",
+                    (name, msg_id, size, f.get("mimeType", "") or "application/octet-stream", fh_hash, folder_id, uid)
                 )
                 _sync_state["imported"] += 1
                 _sync_state["done"] = i + 1
@@ -935,8 +965,8 @@ def _do_sync(uid):
                 _sync_state["files"].append({"name": _err_name, "ok": False, "error": str(e)[:60]})
                 try:
                     db_exec(
-                        "INSERT INTO sync_errors (drive_file_id, file_name, error_msg, folder_id) VALUES (?,?,?,?)",
-                        (_err_drive_id, _err_name, str(e)[:200], folder_id)
+                        "INSERT INTO sync_errors (drive_file_id, file_name, error_msg, folder_id, owner_email) VALUES (?,?,?,?,?)",
+                        (_err_drive_id, _err_name, str(e)[:200], folder_id, uid)
                     )
                 except Exception:
                     pass
@@ -1012,6 +1042,8 @@ def _do_retry(uid, errors):
 
                     # Retry into the same Cloud Storage folder recorded on failure.
                     folder_id = int(f.get("folder_id") or 0)
+                    if folder_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (folder_id, uid)):
+                        raise RuntimeError("Retry target folder does not belong to this account")
 
                     # Google Docs/Sheets/Slides need export, not download
                     mime = f.get("mimeType", "")
@@ -1048,14 +1080,14 @@ def _do_retry(uid, errors):
                     msg_id = getattr(msg, "id", None)
                     # Insert into DB files table with correct folder_id
                     db_exec(
-                        "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id) VALUES (?,?,?,?,?,?)",
-                        (name, msg_id, size, f.get("mimeType", "") or "application/octet-stream", fh_hash, folder_id)
+                        "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id, owner_email) VALUES (?,?,?,?,?,?,?)",
+                        (name, msg_id, size, f.get("mimeType", "") or "application/octet-stream", fh_hash, folder_id, uid)
                     )
                     _sync_state["imported"] += 1
                     _sync_state["done"] = i + 1
                     _sync_state["updated_at"] = _time.time()
                     _sync_state["files"].append({"name": name, "ok": True})
-                    db_exec("DELETE FROM sync_errors WHERE drive_file_id=?", (f.get("id", ""),))
+                    db_exec("DELETE FROM sync_errors WHERE drive_file_id=? AND owner_email=?", (f.get("id", ""), uid))
                     print("[SYNC] Uploaded %s -> folder_id=%s (%d/%d)" % (name, folder_id, i+1, len(missing)), file=sys.stderr, flush=True)
 
                 except Exception as e:
@@ -1086,6 +1118,8 @@ def gdrive_copy():
     folder_id = int(data.get("folder_id", 0))
     if not file_ids:
         return jsonify({"error": "no files selected"}), 400
+    if folder_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (folder_id, uid)):
+        return jsonify({"error": "target folder not found"}), 404
 
     service = _build_drive_service(uid)
     if not service:
@@ -1145,8 +1179,8 @@ def gdrive_copy():
             msg_id = forwarded.id
             if _HAS_HOST:
                 db_exec(
-                    "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id) VALUES (?,?,?,?,?,?)",
-                    (name, msg_id, size, mime or "application/octet-stream", fh, folder_id),
+                    "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id, owner_email) VALUES (?,?,?,?,?,?,?)",
+                    (name, msg_id, size, mime or "application/octet-stream", fh, folder_id, uid),
                 )
             results.append({"id": fid, "name": name, "size": size, "size_human": _human_size(size), "ok": True})
         except HttpError as e:
@@ -2239,13 +2273,13 @@ def photos_picker_import():
         return jsonify({"error": "failed to get items"}), 500
     if item_ids:
         items = [i for i in items if i.get("id") in item_ids]
-    # Keep Picker imports inside the account's existing backup root, never Home.
+    # Keep Picker imports inside this account's backup root, never Home.
     backup_name = "Backup - " + uid
-    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, 0)", (backup_name,))
-    root_rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0", (backup_name,))
+    db_exec("INSERT OR IGNORE INTO folders (name, parent_id, owner_email) VALUES (?, 0, ?)", (backup_name, uid))
+    root_rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=0 AND owner_email=?", (backup_name, uid))
     backup_root_id = root_rows[0]["id"] if root_rows else 0
-    db_exec("INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, ?)", ("Google Photos", backup_root_id))
-    rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=?", ("Google Photos", backup_root_id))
+    db_exec("INSERT OR IGNORE INTO folders (name, parent_id, owner_email) VALUES (?, ?, ?)", ("Google Photos", backup_root_id, uid))
+    rows = db_query("SELECT id FROM folders WHERE name=? AND parent_id=? AND owner_email=?", ("Google Photos", backup_root_id, uid))
     folder_id = rows[0]["id"] if rows else backup_root_id
     imported = 0
     errors = []
@@ -2262,7 +2296,7 @@ def photos_picker_import():
             mime = item.get("mimeType", "image/jpeg")
             from web import telethon_client as _tc, run_async as _ra, CHANNEL as _ch
             forwarded = _ra(_tc.send_file(_ch, file=file_data, caption="photos:" + str(folder_id) + ":" + filename, force_document=True))
-            db_exec("INSERT INTO files (msg_id, file_name, size, mime, folder_id) VALUES (?, ?, ?, ?, ?)", (forwarded.id, filename, len(file_data), mime, folder_id))
+            db_exec("INSERT INTO files (msg_id, file_name, size, mime, folder_id, owner_email) VALUES (?, ?, ?, ?, ?, ?)", (forwarded.id, filename, len(file_data), mime, folder_id, uid))
             imported += 1
         except Exception as e:
             errors.append(item.get("filename", "?") + ": " + str(e)[:100])

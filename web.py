@@ -49,9 +49,9 @@ CHANNEL = int(cfg.get("CHANNEL", "0"))
 SESSION = "/root/telegram_web_session"
 
 ALLOWED = set(x.strip() for x in cfg.get("ALLOWED_USERS", "").split(",") if x.strip())
-GOOGLE_ALLOWED_EMAILS = set(x.strip().lower() for x in cfg.get("GOOGLE_ALLOWED_EMAILS", "").split(",") if x.strip())
-if not GOOGLE_ALLOWED_EMAILS:
-    GOOGLE_ALLOWED_EMAILS = {"bowor4751@gmail.com"}
+# Open Google login; per-account ownership is the access boundary.
+# GOOGLE_ALLOWED_EMAILS is intentionally not used as a login gate.
+GOOGLE_ALLOWED_EMAILS = set()
 ADMIN_IDS = {"5337119189"}
 
 # ============================================================
@@ -102,6 +102,10 @@ def db_scalar(sql, params=()):
     conn.close()
     return r[0] if r else None
 
+def current_owner():
+    """Stable per-account storage owner from the authenticated Google identity."""
+    return (session.get("google_email") or session.get("user_id") or "").strip().lower()
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     # Folders table
@@ -111,7 +115,8 @@ def init_db():
             name TEXT NOT NULL,
             parent_id INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now','localtime')),
-            UNIQUE(name, parent_id)
+            owner_email TEXT NOT NULL DEFAULT '',
+            UNIQUE(name, parent_id, owner_email)
         )
     """)
     # Files table
@@ -124,7 +129,8 @@ def init_db():
             mime TEXT,
             file_hash TEXT,
             folder_id INTEGER DEFAULT 0,
-            uploaded_at TEXT DEFAULT (datetime('now','localtime'))
+            uploaded_at TEXT DEFAULT (datetime('now','localtime')),
+            owner_email TEXT NOT NULL DEFAULT ''
         )
     """)
     # Migrate optional navigation state columns without disturbing existing files.
@@ -135,6 +141,34 @@ def init_db():
         conn.execute("ALTER TABLE files ADD COLUMN is_favorite INTEGER DEFAULT 0")
     if "deleted_at" not in cols:
         conn.execute("ALTER TABLE files ADD COLUMN deleted_at TEXT DEFAULT NULL")
+    if "owner_email" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
+    folder_cols = [r[1] for r in conn.execute("PRAGMA table_info(folders)").fetchall()]
+    if "owner_email" not in folder_cols:
+        conn.execute("ALTER TABLE folders ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
+    # SQLite cannot alter the legacy UNIQUE(name, parent_id) constraint. Rebuild
+    # folders once so different owners may safely use identical folder names.
+    folder_sql = (conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='folders'").fetchone() or [""])[0] or ""
+    if "UNIQUE(name, parent_id, owner_email)" not in folder_sql.replace("\n", " "):
+        conn.execute("ALTER TABLE folders RENAME TO folders_legacy_owner_migration")
+        conn.execute("""CREATE TABLE folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            parent_id INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            owner_email TEXT NOT NULL DEFAULT '',
+            UNIQUE(name, parent_id, owner_email)
+        )""")
+        conn.execute("""INSERT INTO folders (id, name, parent_id, created_at, owner_email)
+                     SELECT id, name, parent_id, created_at, owner_email
+                     FROM folders_legacy_owner_migration""")
+        conn.execute("DROP TABLE folders_legacy_owner_migration")
+    # Existing global data belongs to the original account; new accounts start empty.
+    conn.execute("UPDATE files SET owner_email=? WHERE owner_email=''", ("bowor4751@gmail.com",))
+    conn.execute("UPDATE folders SET owner_email=? WHERE owner_email=''", ("bowor4751@gmail.com",))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_folder ON files(owner_email, folder_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_deleted ON files(owner_email, deleted_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_owner_parent ON folders(owner_email, parent_id)")
     conn.commit()
     conn.close()
 
@@ -164,7 +198,8 @@ def login_required(f):
         uid = session.get("user_id")
         g_email = session.get("google_email", "").lower()
         is_allowed = (uid and uid in ALLOWED) or (uid and uid.lower() in GOOGLE_ALLOWED_EMAILS) or (g_email and g_email in GOOGLE_ALLOWED_EMAILS)
-        if not uid or (ALLOWED and not is_allowed and uid not in ADMIN_IDS):
+        # Google OAuth users are open by default; an explicit allowlist remains optional.
+        if not uid or (GOOGLE_ALLOWED_EMAILS and not is_allowed and uid not in ADMIN_IDS):
             return redirect(url_for("login_page"))
         return f(*args, **kwargs)
     return wrapper
@@ -202,25 +237,31 @@ def api_me():
 @app.route("/api/folders", methods=["GET"])
 @login_required
 def api_folders_list():
+    owner = current_owner()
     parent = int(request.args.get("parent_id", 0))
+    if parent and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (parent, owner)):
+        return jsonify({"error": "Folder tidak ditemukan"}), 404
     rows = db_query("""
         SELECT f.id, f.name, f.created_at,
-               (SELECT COUNT(*) FROM files x WHERE x.folder_id=f.id) +
-               (SELECT COUNT(*) FROM folders y WHERE y.parent_id=f.id) AS item_count
-        FROM folders f WHERE f.parent_id=? ORDER BY f.name
-    """, (parent,))
+               (SELECT COUNT(*) FROM files x WHERE x.folder_id=f.id AND x.owner_email=?) +
+               (SELECT COUNT(*) FROM folders y WHERE y.parent_id=f.id AND y.owner_email=?) AS item_count
+        FROM folders f WHERE f.parent_id=? AND f.owner_email=? ORDER BY f.name
+    """, (owner, owner, parent, owner))
     return jsonify({"folders": [{"id": r["id"], "name": r["name"], "created": r["created_at"], "item_count": r["item_count"]} for r in rows]})
 
 @app.route("/api/folders", methods=["POST"])
 @login_required
 def api_folders_create():
+    owner = current_owner()
     data = request.get_json()
     name = data.get("name", "").strip()
     parent_id = int(data.get("parent_id", 0))
     if not name:
         return jsonify({"error": "Nama folder wajib"}), 400
+    if parent_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (parent_id, owner)):
+        return jsonify({"error": "Parent folder tidak ditemukan"}), 404
     try:
-        db_exec("INSERT INTO folders (name, parent_id) VALUES (?,?)", (name, parent_id))
+        db_exec("INSERT INTO folders (name, parent_id, owner_email) VALUES (?,?,?)", (name, parent_id, owner))
         fid = db_scalar("SELECT last_insert_rowid()")
         return jsonify({"ok": True, "id": fid, "name": name})
     except sqlite3.IntegrityError:
@@ -229,40 +270,44 @@ def api_folders_create():
 @app.route("/api/folders/<int:fid>", methods=["DELETE"])
 @login_required
 def api_folders_delete(fid):
-    # Delete children recursively
+    owner = current_owner()
+    if not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (fid, owner)):
+        return jsonify({"error": "Not found"}), 404
+    # Delete only this owner's descendants recursively.
     def _delete_children(parent_id):
-        children = db_query("SELECT id FROM folders WHERE parent_id=?", (parent_id,))
+        children = db_query("SELECT id FROM folders WHERE parent_id=? AND owner_email=?", (parent_id, owner))
         for c in children:
             _delete_children(c["id"])
-        db_exec("DELETE FROM folders WHERE parent_id=?", (parent_id,))
+        db_exec("DELETE FROM folders WHERE parent_id=? AND owner_email=?", (parent_id, owner))
         # Delete files in this folder
-        file_rows = db_query("SELECT id, msg_id FROM files WHERE folder_id=?", (parent_id,))
+        file_rows = db_query("SELECT id, msg_id FROM files WHERE folder_id=? AND owner_email=?", (parent_id, owner))
         for fr in file_rows:
             try:
                 run_async(telethon_client.delete_messages(CHANNEL, [fr["msg_id"]]))
             except:
                 pass
-            db_exec("DELETE FROM files WHERE id=?", (fr["id"],))
+            db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (fr["id"], owner))
 
     _delete_children(fid)
     # Delete files in root of this folder
-    file_rows = db_query("SELECT id, msg_id FROM files WHERE folder_id=?", (fid,))
+    file_rows = db_query("SELECT id, msg_id FROM files WHERE folder_id=? AND owner_email=?", (fid, owner))
     for fr in file_rows:
         try:
             run_async(telethon_client.delete_messages(CHANNEL, [fr["msg_id"]]))
         except:
             pass
-        db_exec("DELETE FROM files WHERE id=?", (fr["id"],))
-    db_exec("DELETE FROM folders WHERE id=?", (fid,))
+        db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (fr["id"], owner))
+    db_exec("DELETE FROM folders WHERE id=? AND owner_email=?", (fid, owner))
     return jsonify({"ok": True})
 
 @app.route("/api/folders/breadcrumb/<int:fid>")
 @login_required
 def api_breadcrumb(fid):
+    owner = current_owner()
     path = []
     current = fid
     while current > 0:
-        row = db_query("SELECT id, name, parent_id FROM folders WHERE id=?", (current,))
+        row = db_query("SELECT id, name, parent_id FROM folders WHERE id=? AND owner_email=?", (current, owner))
         if not row:
             break
         r = row[0]
@@ -295,17 +340,21 @@ def _file_json(rows):
 @app.route("/api/files")
 @login_required
 def api_files():
+    owner = current_owner()
     q = request.args.get("q", "").strip()
     folder_id = int(request.args.get("folder_id", 0))
     page, per_page, offset = _page_params()
+    if folder_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (folder_id, owner)):
+        return jsonify({"error": "Folder tidak ditemukan"}), 404
 
-    params = []
-    where = "WHERE folder_id=?"
+    params = [owner]
+    where = "WHERE owner_email=? AND folder_id=?"
     params.append(folder_id)
 
     if q:
         where += " AND file_name LIKE ?"
         params.append(f"%{q}%")
+    where += " AND deleted_at IS NULL"
 
     total = db_scalar(f"SELECT COUNT(*) FROM files {where}", params)
     rows = db_query(
@@ -342,10 +391,13 @@ def api_files():
 @app.route("/api/upload", methods=["POST"])
 @login_required
 def api_upload():
+    owner = current_owner()
     files = request.files.getlist("files")
     folder_id = int(request.form.get("folder_id", 0))
     if not files:
         return jsonify({"error": "No files"}), 400
+    if folder_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (folder_id, owner)):
+        return jsonify({"error": "Folder tidak ditemukan"}), 404
 
     results = []
     for f in files:
@@ -367,8 +419,8 @@ def api_upload():
             ))
             msg_id = forwarded.id
             db_exec(
-                "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id) VALUES (?,?,?,?,?,?)",
-                (name, msg_id, size, mime, fh, folder_id),
+                "INSERT INTO files (file_name, msg_id, size, mime, file_hash, folder_id, owner_email) VALUES (?,?,?,?,?,?,?)",
+                (name, msg_id, size, mime, fh, folder_id, owner),
             )
             results.append({"name": name, "size": size, "size_human": human_size(size), "ok": True})
         except FloodWaitError as e:
@@ -381,7 +433,7 @@ def api_upload():
 @app.route("/api/download/<int:fid>")
 @login_required
 def api_download(fid):
-    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=?", (fid,))
+    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=? AND owner_email=?", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
     r = row[0]
@@ -400,7 +452,7 @@ def api_download(fid):
 @app.route("/api/preview/<int:fid>")
 @login_required
 def api_preview(fid):
-    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=?", (fid,))
+    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=? AND owner_email=?", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
     r = row[0]
@@ -419,7 +471,7 @@ def api_preview(fid):
 @login_required
 def api_stream(fid):
     """HTTP Range-aware streaming for video/audio playback."""
-    row = db_query("SELECT file_name, msg_id, mime, size FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    row = db_query("SELECT file_name, msg_id, mime, size FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
     r = row[0]
@@ -468,7 +520,7 @@ def api_stream(fid):
 def api_office_preview(fid):
     """Convert Office file to PDF via LibreOffice and stream the result."""
     import subprocess, tempfile as _tf, shutil
-    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
     r = row[0]
@@ -510,17 +562,18 @@ def api_office_preview(fid):
 @login_required
 def api_delete(fid):
     # Normal delete is reversible: keep the Telegram file intact until explicitly purged.
-    row = db_query("SELECT id FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    row = db_query("SELECT id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
-    db_exec("UPDATE files SET deleted_at=datetime('now','localtime') WHERE id=?", (fid,))
+    db_exec("UPDATE files SET deleted_at=datetime('now','localtime') WHERE id=? AND owner_email=?", (fid, current_owner()))
     return jsonify({"ok": True, "trashed": True})
 
 @app.route("/api/navigation/<section>")
 @login_required
 def api_navigation(section):
     section = section.lower()
-    clauses = []
+    clauses = ["owner_email=?"]
+    params = [current_owner()]
     if section == "recent":
         clauses.append("deleted_at IS NULL")
     elif section == "favorites":
@@ -531,7 +584,6 @@ def api_navigation(section):
         return jsonify({"section": section, "files": [], "total": 0, "page": 1, "per_page": 25, "pages": 1})
     else:
         return jsonify({"error": "unknown section"}), 404
-    params = []
     q = request.args.get("q", "").strip()
     if q:
         clauses.append("file_name LIKE ?")
@@ -547,53 +599,54 @@ def api_navigation(section):
 @app.route("/api/files/<int:fid>/favorite", methods=["POST"])
 @login_required
 def api_toggle_favorite(fid):
-    row = db_query("SELECT id, is_favorite FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    row = db_query("SELECT id, is_favorite FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
     value = 0 if row[0]["is_favorite"] else 1
-    db_exec("UPDATE files SET is_favorite=? WHERE id=?", (value, fid))
+    db_exec("UPDATE files SET is_favorite=? WHERE id=? AND owner_email=?", (value, fid, current_owner()))
     return jsonify({"ok": True, "is_favorite": bool(value)})
 
 @app.route("/api/trash/<int:fid>", methods=["POST"])
 @login_required
 def api_move_to_trash(fid):
-    row = db_query("SELECT id FROM files WHERE id=? AND deleted_at IS NULL", (fid,))
+    row = db_query("SELECT id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
-    db_exec("UPDATE files SET deleted_at=datetime('now','localtime') WHERE id=?", (fid,))
+    db_exec("UPDATE files SET deleted_at=datetime('now','localtime') WHERE id=? AND owner_email=?", (fid, current_owner()))
     return jsonify({"ok": True})
 
 @app.route("/api/trash/<int:fid>/restore", methods=["POST"])
 @login_required
 def api_restore_from_trash(fid):
-    row = db_query("SELECT id FROM files WHERE id=? AND deleted_at IS NOT NULL", (fid,))
+    row = db_query("SELECT id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NOT NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found"}), 404
-    db_exec("UPDATE files SET deleted_at=NULL WHERE id=?", (fid,))
+    db_exec("UPDATE files SET deleted_at=NULL WHERE id=? AND owner_email=?", (fid, current_owner()))
     return jsonify({"ok": True})
 
 @app.route("/api/trash/<int:fid>/permanent", methods=["DELETE"])
 @login_required
 def api_permanently_delete_trash(fid):
-    row = db_query("SELECT id, msg_id FROM files WHERE id=? AND deleted_at IS NOT NULL", (fid,))
+    row = db_query("SELECT id, msg_id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NOT NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found in Trash"}), 404
     try:
         run_async(telethon_client.delete_messages(CHANNEL, [row[0]["msg_id"]]))
     except Exception as e:
         return jsonify({"error": f"Telegram delete failed: {e}"}), 502
-    db_exec("DELETE FROM files WHERE id=?", (fid,))
+    db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (fid, current_owner()))
     return jsonify({"ok": True, "telegram_deleted": True})
 
 @app.route("/api/trash/empty", methods=["DELETE"])
 @login_required
 def api_empty_trash():
-    rows = db_query("SELECT id, msg_id FROM files WHERE deleted_at IS NOT NULL")
+    owner = current_owner()
+    rows = db_query("SELECT id, msg_id FROM files WHERE owner_email=? AND deleted_at IS NOT NULL", (owner,))
     deleted = 0
     for row in rows:
         try:
             run_async(telethon_client.delete_messages(CHANNEL, [row["msg_id"]]))
-            db_exec("DELETE FROM files WHERE id=?", (row["id"],))
+            db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (row["id"], owner))
             deleted += 1
         except Exception:
             pass
@@ -603,8 +656,8 @@ def api_empty_trash():
 @login_required
 def api_files_by_type(kind):
     kind = kind.lower()
-    clauses = ["deleted_at IS NULL"]
-    params = []
+    clauses = ["owner_email=?", "deleted_at IS NULL"]
+    params = [current_owner()]
     if kind == "document":
         clauses.append("(lower(file_name) LIKE '%.doc' OR lower(file_name) LIKE '%.docx' OR lower(file_name) LIKE '%.txt' OR lower(file_name) LIKE '%.rtf')")
     elif kind == "spreadsheet":
@@ -649,8 +702,9 @@ def api_files_by_type(kind):
 @app.route("/api/recent")
 @login_required
 def api_recent():
+    owner = current_owner()
     limit = max(1, min(5000, int(request.args.get("limit", 5))))
-    rows = db_query("SELECT id, file_name, size, mime, uploaded_at, folder_id FROM files ORDER BY id DESC LIMIT ?", (limit,))
+    rows = db_query("SELECT id, file_name, size, mime, uploaded_at, folder_id FROM files WHERE owner_email=? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?", (owner, limit))
     files = []
     for r in rows:
         mime = r["mime"] or ""
@@ -666,14 +720,15 @@ def api_recent():
 @app.route("/api/stats")
 @login_required
 def api_stats():
-    total_files = db_scalar("SELECT COUNT(*) FROM files") or 0
-    total_size = db_scalar("SELECT COALESCE(SUM(size),0) FROM files") or 0
-    images = db_scalar("SELECT COUNT(*) FROM files WHERE mime LIKE 'image/%'") or 0
-    videos = db_scalar("SELECT COUNT(*) FROM files WHERE mime LIKE 'video/%'") or 0
-    audios = db_scalar("SELECT COUNT(*) FROM files WHERE mime LIKE 'audio/%'") or 0
-    folders = db_scalar("SELECT COUNT(*) FROM folders") or 0
+    owner = current_owner()
+    total_files = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL", (owner,)) or 0
+    total_size = db_scalar("SELECT COALESCE(SUM(size),0) FROM files WHERE owner_email=? AND deleted_at IS NULL", (owner,)) or 0
+    images = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL AND mime LIKE 'image/%'", (owner,)) or 0
+    videos = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL AND mime LIKE 'video/%'", (owner,)) or 0
+    audios = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL AND mime LIKE 'audio/%'", (owner,)) or 0
+    folders = db_scalar("SELECT COUNT(*) FROM folders WHERE owner_email=?", (owner,)) or 0
     others = total_files - images - videos - audios
-    type_rows = db_query("SELECT lower(file_name) AS name, mime, size FROM files")
+    type_rows = db_query("SELECT lower(file_name) AS name, mime, size FROM files WHERE owner_email=? AND deleted_at IS NULL", (owner,))
     type_sizes = {"document": 0, "spreadsheet": 0, "presentation": 0, "pdf": 0, "image": 0, "video": 0, "audio": 0, "other": 0}
     for r in type_rows:
         name, mime, size = r["name"] or "", r["mime"] or "", r["size"] or 0
@@ -706,7 +761,7 @@ def api_stats():
 @login_required
 def api_thumb(fid):
     """Generate thumbnail server-side using Pillow"""
-    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=?", (fid,))
+    row = db_query("SELECT file_name, msg_id, mime FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
     if not row:
         return "", 404
     r = row[0]
@@ -735,14 +790,19 @@ def api_thumb(fid):
 @app.route("/api/move", methods=["POST"])
 @login_required
 def api_move():
+    owner = current_owner()
     data = request.get_json()
     file_ids = data.get("file_ids", [])
     folder_id = int(data.get("folder_id", 0))
     if not file_ids:
         return jsonify({"error": "No files"}), 400
+    if folder_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (folder_id, owner)):
+        return jsonify({"error": "Folder tidak ditemukan"}), 404
+    moved = 0
     for fid in file_ids:
-        db_exec("UPDATE files SET folder_id=? WHERE id=?", (folder_id, fid))
-    return jsonify({"ok": True, "moved": len(file_ids)})
+        db_exec("UPDATE files SET folder_id=? WHERE id=? AND owner_email=?", (folder_id, fid, owner))
+        moved += 1
+    return jsonify({"ok": True, "moved": moved})
 # ============================================================
 # GOOGLE OAUTH LOGIN
 # ============================================================
@@ -1877,4 +1937,4 @@ if __name__ == "__main__":
     future.result(timeout=30)
     print("[*] Starting web server on port 8050...")
     register_drive_features(app)
-app.run(host="0.0.0.0", port=8050, debug=False)
+    app.run(host="0.0.0.0", port=8050, debug=False)
