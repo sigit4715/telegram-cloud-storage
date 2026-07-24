@@ -13,8 +13,8 @@ USAGE (in web.py), placed near the bottom before app.run():
     from web_drive import register_drive_features
     register_drive_features(app)
 
-The module reuses the existing helpers from web.py (db_query, db_exec, db_scalar,
-run_async, telethon_client, CHANNEL, DB_PATH, login_required, cfg, BASE).
+The module reuses database/auth helpers from web.py and resolves Telegram clients
+through the authenticated owner's per-account configuration.
 If those are not importable it falls back to internal equivalents so the module
 is also runnable standalone for testing.
 
@@ -55,11 +55,25 @@ try:
         app as _host_app,
         login_required,
         db_query, db_exec, db_scalar,
-        run_async, telethon_client, DB_PATH, BASE, cfg,
+        run_async, get_telegram_client, telegram_target, require_telegram_config,
+        DB_PATH, BASE, cfg, TELEGRAM_CONFIG_KEY,
     )
+    import telegram_accounts
     _HAS_HOST = True
 except Exception:  # pragma: no cover - standalone testing
+    import telegram_accounts
+    TELEGRAM_CONFIG_KEY = "telegram-cloud-local-key"
     _HAS_HOST = False
+
+def _telegram_for_owner(owner):
+    """Return only the passed owner's client, channel and async bridge.
+
+    In the running service these are imported from the host module. In unit
+    tests, direct module globals provide the same dependency-injection seam.
+    """
+    if not _HAS_HOST:
+        raise RuntimeError("Telegram host belum siap")
+    return get_telegram_client(owner), telegram_target(owner), run_async
 
 # Local config / paths
 if _HAS_HOST:
@@ -101,8 +115,6 @@ except Exception:  # pragma: no cover
 # Drive API scopes
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/photoslibrary.readonly", "https://www.googleapis.com/auth/photospicker.mediaitems.readonly", "openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
 
-# Channel target (use the configured one; fall back to "me" in tests)
-CHANNEL = int(cfg.get("CHANNEL", "0"))
 
 # ----------------------------------------------------------------------------
 # Local DB helpers (only used if host helpers absent)
@@ -282,8 +294,28 @@ def api_profile_get():
         return jsonify({"error": "not logged in"}), 401
     row = db_query("SELECT * FROM user_profiles WHERE user_id=?", (uid,))
     if not row:
-        return jsonify({"profile": None})
+        # Auto-populate from Google session if available
+        google_name = session.get("google_name", "")
+        google_email = session.get("google_email", uid if "@" in uid else "")
+        photo_url = session.get("google_picture", "")
+        return jsonify({
+            "profile": {
+                "user_id": uid,
+                "name": google_name,
+                "email": google_email,
+                "bio": "",
+                "phone": "",
+                "photo_url": photo_url,
+                "updated_at": _now(),
+            }
+        })
     r = row[0]
+    photo_url = None
+    if r["photo_path"]:
+        photo_url = url_for("drive_ext.api_profile_photo", user_id=r["user_id"])
+    elif session.get("google_picture"):
+        photo_url = session["google_picture"]
+        
     return jsonify({
         "profile": {
             "user_id": r["user_id"],
@@ -291,8 +323,7 @@ def api_profile_get():
             "email": r["email"] or "",
             "bio": r["bio"] or "",
             "phone": r["phone"] or "",
-            "photo_url": (url_for("drive_ext.api_profile_photo", user_id=r["user_id"])
-                          if r["photo_path"] else None),
+            "photo_url": photo_url,
             "updated_at": r["updated_at"],
         }
     })
@@ -364,7 +395,7 @@ def api_profile_photo(user_id):
 def profile_page():
     if not session.get("user_id"):
         return redirect(url_for("login_page"))
-    return PROFILE_HTML
+    return CONSOLIDATED_SETTINGS_HTML
 
 # ============================================================================
 #  GOOGLE DRIVE FEATURES
@@ -774,36 +805,8 @@ def _do_sync(uid):
             return
         print("[SYNC] Drive service built OK", file=sys.stderr, flush=True)
 
-        # telethon_client was still None when this extension imported it. Resolve
-        # the live client from the already-running __main__ module without
-        # importing/executing web.py again.
-        client = globals().get("telethon_client")
-        _run_async_fn = globals().get("run_async")
-        host_channel = CHANNEL
         try:
-            import __main__ as _host
-            client = getattr(_host, "telethon_client", client)
-            _run_async_fn = getattr(_host, "run_async", _run_async_fn)
-            # web.py is executed as __main__; its config is authoritative.
-            host_channel = getattr(_host, "CHANNEL", host_channel)
-        except Exception:
-            pass
-        if not client or not _run_async_fn:
-            _sync_state["message"] = "Telegram client not ready"
-            _sync_state["running"] = False
-            return
-        print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
-
-        # Resolve Telegram channel entity ONCE before the loop.
-        target = int(host_channel)
-        if target <= 0:
-            _sync_state["message"] = "Telegram channel belum dikonfigurasi"
-            _sync_state["running"] = False
-            print("[SYNC] FATAL: invalid host CHANNEL=%r" % (host_channel,), file=sys.stderr, flush=True)
-            return
-        if target > 0:
-            target = -int("100" + str(target))
-        try:
+            client, target, _run_async_fn = _telegram_for_owner(uid)
             entity = _run_async_fn(client.get_entity(target))
             print("[SYNC] Resolved entity: %s id=%s title=%s" % (type(entity).__name__, getattr(entity, 'id', '?'), getattr(entity, 'title', '?')), file=sys.stderr, flush=True)
         except Exception as ent_err:
@@ -1001,18 +1004,14 @@ def _do_retry(uid, errors):
             _sync_state["running"] = False
             return
 
-        target = int(CHANNEL)
-        if target > 0:
-            target = -int("100" + str(target))
-
-        # Reuse existing telethon_client + run_async from web.py
-        client = globals().get("telethon_client")
-        _run_async_fn = globals().get("run_async")
-        if not client or not _run_async_fn:
-            _sync_state["message"] = "Telegram client not ready"
+        try:
+            client, target, _run_async_fn = _telegram_for_owner(uid)
+        except Exception as tg_err:
+            _sync_state["message"] = "Telegram belum siap: %s" % str(tg_err)[:100]
             _sync_state["running"] = False
             return
-        print("[SYNC] Using existing Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
+        target = target if target < 0 else -int("100" + str(target))
+        print("[SYNC] Using per-account Telegram client: %s" % type(client).__name__, file=sys.stderr, flush=True)
 
         # Normalize persisted failed rows into the same shape used by the sync loop.
         missing = [{
@@ -1125,14 +1124,10 @@ def gdrive_copy():
     if not service:
         return jsonify({"error": "not connected to Google Drive", "connected": False}), 401
 
-    # Ensure target channel resolved
-    target = CHANNEL
     try:
-        from web import CHANNEL as _cfg_channel
-        if _cfg_channel and str(_cfg_channel) not in ("", "me", "__AUTO_CREATE__"):
-            target = _cfg_channel
-    except Exception:
-        pass
+        client, target, _run_async_fn = _telegram_for_owner(uid)
+    except Exception as e:
+        return jsonify({"error": "Telegram belum dikonfigurasi: " + str(e)[:160]}), 400
 
     results = []
     for fid in file_ids:
@@ -1168,8 +1163,8 @@ def gdrive_copy():
             size = buf.getbuffer().nbytes
             fh = __import__("hashlib").md5(name.encode()).hexdigest()[:12]
 
-            forwarded = run_async(
-                telethon_client.send_file(
+            forwarded = _run_async_fn(
+                client.send_file(
                     target,
                     file=buf,
                     caption=f"cloud:{folder_id}:{name}",
@@ -1210,147 +1205,7 @@ def photos_page_legacy():
 # ----------------------------------------------------------------------------
 # HTML TEMPLATES
 # ----------------------------------------------------------------------------
-PROFILE_HTML = '''<!DOCTYPE html>
-<html lang="id">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cloud Storage — Profile</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0d0221;--card:#1a0a3e;--border:#6c3baa;--accent:#a78bfa;--accent2:#8b5cf6;--text:#e0e0e0;--muted:#6b7280;--danger:#f87171;--green:#34d399}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.topbar{background:#1a0a3e;border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.topbar h1{font-size:18px;color:var(--accent)}
-.topbar .right{display:flex;align-items:center;gap:12px}
-.topbar .right button{padding:6px 14px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--accent);font-size:13px;cursor:pointer}
-.wrap{max-width:720px;margin:32px auto;padding:0 24px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px}
-.avatar-row{display:flex;align-items:center;gap:20px;margin-bottom:28px}
-.avatar{width:96px;height:96px;border-radius:50%;background:#0d0221;border:2px solid var(--border);object-fit:cover;display:flex;align-items:center;justify-content:center;font-size:36px;color:var(--accent);overflow:hidden;flex-shrink:0}
-.avatar img{width:100%;height:100%;object-fit:cover}
-.avatar-actions{display:flex;flex-direction:column;gap:8px}
-.btn-sm{padding:8px 16px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--accent);font-size:13px;cursor:pointer}
-.btn-sm:hover{background:rgba(167,139,250,.1)}
-.form-group{margin-bottom:18px}
-.form-group label{display:block;font-size:13px;color:var(--accent);margin-bottom:6px;font-weight:500}
-.form-group input,.form-group textarea{width:100%;padding:12px 14px;background:#0d0221;border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:.2s;font-family:inherit}
-.form-group input:focus,.form-group textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(167,139,250,.2)}
-.form-group textarea{resize:vertical;min-height:80px}
-.btn-save{width:100%;padding:14px;background:linear-gradient(135deg,#6c3baa,#a78bfa);color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:.2s;margin-top:8px}
-.btn-save:hover{opacity:.9}
-.btn-save:disabled{opacity:.5;cursor:not-allowed}
-.msg{font-size:13px;margin-top:12px;text-align:center;min-height:18px}
-.msg.ok{color:var(--green)}
-.msg.err{color:var(--danger)}
-.back{display:inline-block;margin-top:16px;color:var(--accent);text-decoration:none;font-size:13px}
-.hidden{display:none}
-</style>
-</head>
-<body>
-<div class="topbar">
-  <h1>☁️ Cloud Storage</h1>
-  <div class="right">
-    <button onclick="doLogout()">Logout</button>
-  </div>
-</div>
-<div class="wrap">
-  <div class="card">
-    <div class="avatar-row">
-      <div class="avatar" id="avatar">👤</div>
-      <div class="avatar-actions">
-        <button class="btn-sm" onclick="document.getElementById('photoInput').click()">📷 Ganti Foto</button>
-        <button class="btn-sm" id="removePhoto" style="display:none" onclick="removePhoto()">🗑 Hapus Foto</button>
-        <input type="file" id="photoInput" accept="image/*" hidden onchange="uploadPhoto()">
-      </div>
-    </div>
-    <form id="profileForm" onsubmit="saveProfile(event)">
-      <div class="form-group">
-        <label>Nama</label>
-        <input type="text" id="name" placeholder="Nama lengkap" maxlength="100">
-      </div>
-      <div class="form-group">
-        <label>Email</label>
-        <input type="email" id="email" placeholder="email@example.com" maxlength="150">
-      </div>
-      <div class="form-group">
-        <label>Telepon</label>
-        <input type="text" id="phone" placeholder="+62..." maxlength="30">
-      </div>
-      <div class="form-group">
-        <label>Bio</label>
-        <textarea id="bio" placeholder="Tentang anda..." maxlength="500"></textarea>
-      </div>
-      <button type="submit" class="btn-save" id="saveBtn">💾 Simpan Profil</button>
-    </form>
-    <div class="msg" id="msg"></div>
-  </div>
-  <a class="back" href="/drive">← Kembali ke Drive</a>
-<a class="back" href="/settings" style="border-color:#f59e0b;color:#f59e0b">⚙️ Pengaturan</a>
-</div>
-<script>
-const api=(u,o)=>fetch(u,{credentials:'same-origin',...o}).then(r=>r.json());
-async function init(){
-  const me=await api('/api/me');
-  if(!me.logged_in){location.href='/';return;}
-  loadProfile();
-}
-async function loadProfile(){
-  const d=await api('/api/profile');
-  const p=d.profile;
-  if(!p)return;
-  document.getElementById('name').value=p.name||'';
-  document.getElementById('email').value=p.email||'';
-  document.getElementById('phone').value=p.phone||'';
-  document.getElementById('bio').value=p.bio||'';
-  if(p.photo_url){
-    document.getElementById('avatar').innerHTML='<img src="'+p.photo_url+'">';
-    document.getElementById('removePhoto').style.display='block';
-  }
-}
-async function saveProfile(e){
-  e.preventDefault();
-  const btn=document.getElementById('saveBtn');
-  btn.disabled=true;
-  const msg=document.getElementById('msg');
-  msg.textContent='';msg.className='msg';
-  const d=await api('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name:document.getElementById('name').value,email:document.getElementById('email').value,phone:document.getElementById('phone').value,bio:document.getElementById('bio').value})});
-  if(d.ok){msg.textContent='✅ Profil tersimpan';msg.className='msg ok';}
-  else{msg.textContent='❌ '+(d.error||'Gagal');msg.className='msg err';}
-  btn.disabled=false;
-}
-async function uploadPhoto(){
-  const f=document.getElementById('photoInput').files[0];
-  if(!f)return;
-  const fd=new FormData();fd.append('photo',f);
-  const msg=document.getElementById('msg');msg.textContent='';msg.className='msg';
-  const r=await fetch('/api/profile/photo',{method:'POST',body:fd,credentials:'same-origin'});
-  const d=await r.json();
-  if(d.ok){document.getElementById('avatar').innerHTML='<img src="'+d.photo_url+'">';document.getElementById('removePhoto').style.display='block';msg.textContent='✅ Foto diperbarui';msg.className='msg ok';}
-  else{msg.textContent='❌ '+(d.error||'Gagal');msg.className='msg err';}
-}
-async function removePhoto(){
-  // reset to default by removing local reference (soft - just hide)
-  const msg=document.getElementById('msg');
-  document.getElementById('avatar').innerHTML='👤';
-  document.getElementById('removePhoto').style.display='none';
-  msg.textContent='ℹ️ Foto dihapus dari tampilan (reload untuk mengembalikan)';msg.className='msg ok';
-}
-async function doLogout(){await api('/api/logout',{method:'POST'});location.href='/';}
-async function retrySync(){
-  if(!confirm('Retry file yang gagal?'))return;
-  const btn=document.getElementById('retryBtn');
-  btn.disabled=true;btn.textContent='Retrying...';
-  try{
-    const d=await api('/api/gdrive/sync/retry?t='+Date.now());
-    if(d.ok){pollSync();}
-    else{btn.textContent='Tidak ada file gagal';setTimeout(()=>{btn.style.display='none';},2000);}
-  }catch(e){btn.textContent='Error: '+e;}
-}
-init();</script>
-</body>
-</html>'''
+
 
 GDRIVE_HTML = '''<!DOCTYPE html>
 <html lang="id">
@@ -2071,13 +1926,11 @@ def photos_drive_import():
         
         service = build('drive', 'v3', credentials=creds)
         
-        # Get channel
-        ch_row = db_query("SELECT id FROM channels WHERE user_id=? LIMIT 1", (uid,))
-        if not ch_row:
-            return jsonify({"error": "channel not found"}), 404
-        
-        channel_id = ch_row[0]["id"]
-        
+        try:
+            client, channel_id, _run_async_fn = _telegram_for_owner(uid)
+        except Exception as e:
+            return jsonify({"error": "Telegram belum dikonfigurasi: " + str(e)[:160]}), 400
+
         imported = 0
         errors = []
         
@@ -2100,12 +1953,7 @@ def photos_drive_import():
                 fh.seek(0)
                 data_bytes = fh.read()
                 
-                # Upload to Telegram channel
-                from telethon import TelegramClient
-                client = _get_telethon_client()
-                if not client:
-                    errors.append(f"{name}: client error")
-                    continue
+                # Upload uses this Google account's Telegram Bot/channel only.
                 
                 # Save to temp
                 import tempfile
@@ -2121,12 +1969,8 @@ def photos_drive_import():
                         caption=name,
                         force_document=False
                     )
-                
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(upload_to_tg())
-                loop.close()
+
+                _run_async_fn(upload_to_tg())
                 
                 os.unlink(tmp.name)
                 imported += 1
@@ -2294,8 +2138,8 @@ def photos_picker_import():
             file_data = dl_resp.read()
             filename = item.get("filename", "photo.jpg")
             mime = item.get("mimeType", "image/jpeg")
-            from web import telethon_client as _tc, run_async as _ra, CHANNEL as _ch
-            forwarded = _ra(_tc.send_file(_ch, file=file_data, caption="photos:" + str(folder_id) + ":" + filename, force_document=True))
+            client, target, _run_async_fn = _telegram_for_owner(uid)
+            forwarded = _run_async_fn(client.send_file(target, file=file_data, caption="photos:" + str(folder_id) + ":" + filename, force_document=True))
             db_exec("INSERT INTO files (msg_id, file_name, size, mime, folder_id, owner_email) VALUES (?, ?, ?, ?, ?, ?)", (forwarded.id, filename, len(file_data), mime, folder_id, uid))
             imported += 1
         except Exception as e:
@@ -2315,15 +2159,15 @@ def photos_picker_import():
 # Allowed user ids that may view/modify settings
 SETTINGS_ALLOWED_IDS = {"5337119189", "1032673884", "bowor4751@gmail.com"}
 
-# Config keys managed by the Settings page
+# Global admin settings are only for shared Google integrations. Telegram
+# credentials are stored per Google owner through /api/settings/telegram.
 SETTINGS_KEYS = [
-    "API_ID", "API_HASH", "BOT_TOKEN", "CHANNEL",
     "GDRIVE_CLIENT_ID", "GDRIVE_CLIENT_SECRET",
     "PHOTOS_CLIENT_ID", "PHOTOS_CLIENT_SECRET",
 ]
 
 # Keys whose values are secrets and must be masked in GET responses
-SETTINGS_SECRET_KEYS = {"API_HASH", "BOT_TOKEN", "GDRIVE_CLIENT_SECRET", "PHOTOS_CLIENT_SECRET"}
+SETTINGS_SECRET_KEYS = {"GDRIVE_CLIENT_SECRET", "PHOTOS_CLIENT_SECRET"}
 
 
 def _config_env_path():
@@ -2402,10 +2246,64 @@ def _write_config_env(values):
 @drive_ext.route("/settings")
 def settings_page():
     """Render the Settings configuration page."""
-    uid = session.get("user_id")
-    if uid not in SETTINGS_ALLOWED_IDS:
+    uid = session.get("google_email") or session.get("user_id")
+    if not uid:
         return redirect(url_for("login_page"))
-    return SETTINGS_HTML
+    return CONSOLIDATED_SETTINGS_HTML
+
+
+@drive_ext.route("/settings/telegram")
+def settings_telegram_page():
+    """Render the dedicated Telegram settings page."""
+    uid = (session.get("google_email") or session.get("user_id") or "").strip().lower()
+    if not uid:
+        return redirect(url_for("login_page"))
+    return CONSOLIDATED_SETTINGS_HTML
+
+
+@drive_ext.route("/api/settings/telegram", methods=["GET"])
+def api_telegram_settings_get():
+    uid = (session.get("google_email") or session.get("user_id") or "").strip().lower()
+    if not uid:
+        return jsonify({"error": "not logged in"}), 401
+    return jsonify(telegram_accounts.get_public_config(DB_PATH, uid))
+
+
+@drive_ext.route("/api/settings/telegram", methods=["POST"])
+def api_telegram_settings_post():
+    uid = (session.get("google_email") or session.get("user_id") or "").strip().lower()
+    if not uid:
+        return jsonify({"error": "not logged in"}), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        old_client = telegram_accounts.save_account_config(DB_PATH, TELEGRAM_CONFIG_KEY, uid, {
+            "api_id": data.get("api_id", ""), "api_hash": data.get("api_hash", ""),
+            "bot_token": data.get("bot_token", ""), "channel_id": data.get("channel_id", "")
+        })
+        # Disconnect only this owner's stale authenticated client. Other tenants
+        # keep their own cached connections untouched.
+        if old_client:
+            run_async(old_client.disconnect())
+            telegram_accounts.pop_client(uid)
+        return jsonify({"ok": True, **telegram_accounts.get_public_config(DB_PATH, uid)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Gagal menyimpan konfigurasi Telegram"}), 500
+
+
+@drive_ext.route("/api/settings/telegram/test", methods=["POST"])
+def api_telegram_settings_test():
+    uid = (session.get("google_email") or session.get("user_id") or "").strip().lower()
+    if not uid:
+        return jsonify({"error": "not logged in"}), 401
+    try:
+        client, target, run = _telegram_for_owner(uid)
+        entity = run(client.get_entity(target))
+        me = run(client.get_me())
+        return jsonify({"ok": True, "connected": True, "username": getattr(me, "username", None), "channel": getattr(entity, "title", None)})
+    except Exception as exc:
+        return jsonify({"ok": False, "connected": False, "error": str(exc)[:240]})
 
 
 @drive_ext.route("/api/settings", methods=["GET"])
@@ -2445,22 +2343,6 @@ def api_settings_post():
             v = data[k]
             values[k] = v if v is None else str(v)
 
-    # Validate: API_ID must be int
-    if "API_ID" in values:
-        try:
-            int(str(values["API_ID"]).strip())
-        except (ValueError, TypeError):
-            return jsonify({"error": "API_ID must be an integer"}), 400
-
-    # Validate: CHANNEL must be int (allow empty / __AUTO_CREATE__ passthrough)
-    if "CHANNEL" in values:
-        ch = str(values["CHANNEL"]).strip()
-        if ch and ch != "__AUTO_CREATE__":
-            try:
-                int(ch)
-            except (ValueError, TypeError):
-                return jsonify({"error": "CHANNEL must be an integer"}), 400
-
     try:
         _write_config_env(values)
     except OSError as e:
@@ -2475,54 +2357,6 @@ def api_settings_post():
         k: (_mask_secret(values[k]) if k in SETTINGS_SECRET_KEYS else values[k])
         for k in values
     }})
-
-
-@drive_ext.route("/api/settings/test-telegram", methods=["POST"])
-def api_settings_test_telegram():
-    uid = session.get("user_id")
-    if uid not in SETTINGS_ALLOWED_IDS:
-        return jsonify({"error": "forbidden"}), 403
-    _ensure_cfg_loaded()
-
-    api_id = cfg.get("API_ID")
-    api_hash = cfg.get("API_HASH")
-    bot_token = cfg.get("BOT_TOKEN")
-
-    if not (api_id and api_hash and bot_token):
-        return jsonify({
-            "ok": False,
-            "connected": False,
-            "username": None,
-            "error": "Missing Telegram credentials (API_ID, API_HASH, BOT_TOKEN)",
-        })
-
-    # Try to reach Telegram Bot API using the configured token
-    try:
-        import urllib.request
-        import urllib.error
-        url = f"https://api.telegram.org/bot{bot_token}/getMe"
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        if payload.get("ok"):
-            return jsonify({
-                "ok": True,
-                "connected": True,
-                "username": payload.get("result", {}).get("username"),
-            })
-        return jsonify({
-            "ok": False,
-            "connected": False,
-            "username": None,
-            "error": payload.get("description", "Telegram API returned ok=false"),
-        })
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "connected": False,
-            "username": None,
-            "error": str(e),
-        })
 
 
 @drive_ext.route("/api/settings/restart", methods=["POST"])
@@ -2544,12 +2378,14 @@ def api_settings_restart():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-SETTINGS_HTML = '''<!DOCTYPE html>
+
+
+CONSOLIDATED_SETTINGS_HTML = '''<!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cloud Storage — Pengaturan</title>
+<title>Cloud Storage &mdash; Pengaturan</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0d0221;--card:#1a0a3e;--border:#6c3baa;--accent:#a78bfa;--accent2:#8b5cf6;--text:#e0e0e0;--muted:#6b7280;--danger:#f87171;--green:#34d399}
@@ -2560,11 +2396,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .topbar .right button{padding:6px 14px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--accent);font-size:13px;cursor:pointer}
 .wrap{max-width:720px;margin:32px auto;padding:0 24px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:24px;overflow-x:auto}
+.tab-btn{padding:12px 18px;cursor:pointer;color:var(--muted);font-weight:600;font-size:14px;border-bottom:3px solid transparent;transition:.2s;white-space:nowrap;background:transparent;border-top:0;border-left:0;border-right:0}
+.tab-btn:hover{color:var(--accent)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent2)}
+.tab-content{display:none}
+.tab-content.active{display:block}
 .card h2{font-size:16px;color:var(--accent);margin-bottom:20px}
 .form-group{margin-bottom:18px}
 .form-group label{display:block;font-size:13px;color:var(--accent);margin-bottom:6px;font-weight:500}
-.form-group input{width:100%;padding:12px 14px;background:#0d0221;border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:.2s;font-family:inherit}
-.form-group input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(167,139,250,.2)}
+.form-group input,.form-group textarea{width:100%;padding:12px 14px;background:#0d0221;border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:.2s;font-family:inherit}
+.form-group input:focus,.form-group textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(167,139,250,.2)}
+.form-group textarea{resize:vertical;min-height:80px}
 .btn-save{width:100%;padding:14px;background:linear-gradient(135deg,#6c3baa,#a78bfa);color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:.2s;margin-top:8px}
 .btn-save:hover{opacity:.9}
 .btn-save:disabled{opacity:.5;cursor:not-allowed}
@@ -2575,7 +2418,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .msg{font-size:13px;margin-top:14px;text-align:center;min-height:18px}
 .msg.ok{color:var(--green)}
 .msg.err{color:var(--danger)}
-.back{display:inline-block;margin-top:16px;color:var(--accent);text-decoration:none;font-size:13px}
+.tutorial{line-height:1.6;font-size:14px;color:rgba(224,224,224,0.9)}
+.tutorial h3{font-size:15px;color:var(--accent);margin:20px 0 8px;font-weight:600}
+.tutorial h4{font-size:14px;color:var(--accent2);margin:14px 0 6px;font-weight:600}
+.tutorial ul,.tutorial ol{margin-left:20px;margin-bottom:12px}
+.tutorial li{margin-bottom:6px}
+.tutorial code{background:#0d0221;padding:2px 6px;border-radius:4px;color:var(--accent);font-family:monospace;font-size:12px;border:1px solid rgba(167,139,250,0.15)}
+.tutorial a{color:var(--accent2);font-weight:500;text-decoration:none;border-bottom:1px dashed var(--accent2)}
+.tutorial a:hover{color:var(--accent);border-bottom-style:solid}
+.hidden{display:none}
 </style>
 </head>
 <body>
@@ -2587,104 +2438,314 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 </div>
 <div class="wrap">
   <div class="card">
-    <h2>⚙️ Pengaturan</h2>
-    <form id="settingsForm" onsubmit="saveSettings(event)">
-      <div class="form-group">
-        <label>API ID</label>
-        <input type="text" id="API_ID" inputmode="numeric" placeholder="1234567">
-      </div>
-      <div class="form-group">
-        <label>API HASH</label>
-        <input type="text" id="API_HASH" placeholder="abc123...">
-      </div>
-      <div class="form-group">
-        <label>BOT TOKEN</label>
-        <input type="text" id="BOT_TOKEN" placeholder="123456:ABC-DEF...">
-      </div>
-      <div class="form-group">
-        <label>CHANNEL</label>
-        <input type="text" id="CHANNEL" inputmode="numeric" placeholder="-1001234567 (atau __AUTO_CREATE__)">
-      </div>
-      <div class="form-group">
-        <label>Google Drive Client ID</label>
-        <input type="text" id="GDRIVE_CLIENT_ID" placeholder="....apps.googleusercontent.com">
-      </div>
-      <div class="form-group">
-        <label>Google Drive Client Secret</label>
-        <input type="text" id="GDRIVE_CLIENT_SECRET" placeholder="GOCSPX-...">
-      </div>
-      <div class="form-group">
-        <label>Google Photos Client ID</label>
-        <input type="text" id="PHOTOS_CLIENT_ID" placeholder="....apps.googleusercontent.com">
-      </div>
-      <div class="form-group">
-        <label>Google Photos Client Secret</label>
-        <input type="text" id="PHOTOS_CLIENT_SECRET" placeholder="GOCSPX-...">
-      </div>
-      <button type="submit" class="btn-save" id="saveBtn">💾 Simpan Pengaturan</button>
-    </form>
-    <div class="btn-row">
-      <button id="testBtn" onclick="testTelegram()">🔌 Tes Koneksi Telegram</button>
-      <button id="restartBtn" onclick="restartService()">🔄 Restart Layanan</button>
+    <div class="tabs" id="settingsTabs">
+      <button class="tab-btn" id="tab-btn-profile" onclick="switchTab('profile')">👤 Profil</button>
+      <button class="tab-btn" id="tab-btn-telegram" onclick="switchTab('telegram')">✈️ Telegram</button>
+      <button class="tab-btn hidden" id="tab-btn-google" onclick="switchTab('google')">⚙️ Google</button>
+      <button class="tab-btn" id="tab-btn-tutorial" onclick="switchTab('tutorial')">📖 Tutorial</button>
     </div>
-    <div class="msg" id="msg"></div>
+
+    <!-- PROFIL -->
+    <div id="content-profile" class="tab-content">
+      <div style="display:flex;align-items:center;gap:20px;margin-bottom:28px">
+        <div id="avatar" style="width:96px;height:96px;border-radius:50%;background:#0d0221;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:36px;color:var(--accent);overflow:hidden;flex-shrink:0">👤</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn-row button" onclick="document.getElementById('photoInput').click()" style="padding:8px 16px;border-radius:8px;font-size:13px">📷 Ganti Foto</button>
+          <button class="btn-row button" id="removePhoto" style="display:none;padding:8px 16px;border-radius:8px;font-size:13px;color:var(--danger);border-color:rgba(239,68,68,.4)" onclick="removePhoto()">🗑 Hapus Foto</button>
+          <input type="file" id="photoInput" accept="image/*" hidden onchange="uploadPhoto()">
+        </div>
+      </div>
+      <form id="profileForm" onsubmit="saveProfile(event)">
+        <div class="form-group">
+          <label>Nama</label>
+          <input type="text" id="name" placeholder="Nama lengkap" maxlength="100">
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="email" placeholder="email@example.com" maxlength="150">
+        </div>
+        <div class="form-group">
+          <label>Telepon</label>
+          <input type="text" id="phone" placeholder="+62..." maxlength="30">
+        </div>
+        <div class="form-group">
+          <label>Bio</label>
+          <textarea id="bio" placeholder="Tentang anda..." maxlength="500"></textarea>
+        </div>
+        <button type="submit" class="btn-save" id="saveProfileBtn">💾 Simpan Profil</button>
+      </form>
+      <div class="msg" id="profileMsg"></div>
+    </div>
+
+    <!-- TELEGRAM -->
+    <div id="content-telegram" class="tab-content">
+      <h2>✈️ Pengaturan Telegram</h2>
+      <form id="tgSettingsForm" onsubmit="saveTgSettings(event)">
+        <div class="form-group">
+          <label>API ID</label>
+          <input type="number" id="api_id" placeholder="Contoh: 123456">
+        </div>
+        <div class="form-group">
+          <label>API Hash</label>
+          <input type="password" id="api_hash" autocomplete="new-password" placeholder="Masukkan API Hash">
+        </div>
+        <div class="form-group">
+          <label>Bot Token</label>
+          <input type="password" id="bot_token" autocomplete="new-password" placeholder="123456:AA...">
+        </div>
+        <div class="form-group">
+          <label>Channel ID</label>
+          <input type="text" id="channel_id" placeholder="-1001234567890">
+        </div>
+        <button type="submit" class="btn-save" id="saveTgBtn">💾 Simpan Pengaturan</button>
+      </form>
+      <div class="btn-row">
+        <button id="testBtn" onclick="testConnection()">🔌 Uji Koneksi</button>
+      </div>
+      <div class="msg" id="tgMsg"></div>
+    </div>
+
+    <!-- GOOGLE -->
+    <div id="content-google" class="tab-content">
+      <h2>⚙️ Integrasi Google (Admin)</h2>
+      <form id="googleSettingsForm" onsubmit="saveGoogleSettings(event)">
+        <div class="form-group">
+          <label>Google Drive Client ID</label>
+          <input type="text" id="GDRIVE_CLIENT_ID" placeholder="....apps.googleusercontent.com">
+        </div>
+        <div class="form-group">
+          <label>Google Drive Client Secret</label>
+          <input type="text" id="GDRIVE_CLIENT_SECRET" placeholder="GOCSPX-...">
+        </div>
+        <div class="form-group">
+          <label>Google Photos Client ID</label>
+          <input type="text" id="PHOTOS_CLIENT_ID" placeholder="....apps.googleusercontent.com">
+        </div>
+        <div class="form-group">
+          <label>Google Photos Client Secret</label>
+          <input type="text" id="PHOTOS_CLIENT_SECRET" placeholder="GOCSPX-...">
+        </div>
+        <button type="submit" class="btn-save" id="saveGoogleBtn">💾 Simpan Pengaturan</button>
+      </form>
+      <div class="btn-row">
+        <button id="restartBtn" onclick="restartService()">🔄 Restart Layanan</button>
+      </div>
+      <div class="msg" id="googleMsg"></div>
+    </div>
+
+    <!-- TUTORIAL -->
+    <div id="content-tutorial" class="tab-content">
+      <h2>📖 Panduan Pengaturan</h2>
+      <div class="tutorial">
+        <h3>Panduan Pembuatan Kredensial Telegram</h3>
+        <p>Untuk menggunakan fitur Telegram, Anda membutuhkan <strong>API ID</strong>, <strong>API Hash</strong>, <strong>Bot Token</strong>, dan <strong>Channel ID</strong>.</p>
+        
+        <h4>1. Cara Mendapatkan API ID & API Hash</h4>
+        <ul>
+          <li>Buka <a href="https://my.telegram.org/" target="_blank">my.telegram.org</a> di browser Anda.</li>
+          <li>Masukkan nomor telepon akun Telegram Anda (Gunakan format internasional, misal: +62812xxxx).</li>
+          <li>Masukkan kode verifikasi (OTP) yang dikirimkan ke aplikasi Telegram Anda.</li>
+          <li>Pilih menu <strong>API Development Tools</strong>.</li>
+          <li>Isi formulir pembuatan aplikasi baru (App title dan Short name bebas, klik Create).</li>
+          <li>Anda akan diarahkan ke halaman yang menampilkan <strong>App api_id</strong> dan <strong>App api_hash</strong>.</li>
+          <li>Salin nilai tersebut dan tempel ke kolom API ID & API Hash.</li>
+        </ul>
+        
+        <h4>2. Cara Membuat Bot Token (via @BotFather)</h4>
+        <ul>
+          <li>Buka aplikasi Telegram Anda, cari username <a href="https://t.me/BotFather" target="_blank">@BotFather</a>.</li>
+          <li>Jalankan perintah <code>/newbot</code>.</li>
+          <li>Masukkan nama untuk bot Anda (nama bebas untuk tampilan).</li>
+          <li>Masukkan username unik untuk bot Anda (username harus berakhiran kata <code>bot</code>, misal: <code>MyCloudStorageBot</code>).</li>
+          <li>Anda akan mendapatkan token bot Anda (misal: <code>123456789:ABCdefGhIJKlmNoPQRsTuvWxYz</code>).</li>
+          <li>Salin token tersebut dan tempel ke kolom Bot Token.</li>
+        </ul>
+        
+        <h4>3. Cara Mendapatkan Channel ID</h4>
+        <ul>
+          <li>Buat Channel Telegram baru di aplikasi Telegram Anda (Pilih tipe Private atau Public).</li>
+          <li>Masukkan bot yang baru saja Anda buat ke dalam channel tersebut sebagai <strong>Administrator</strong> (beri akses Post Messages).</li>
+          <li>Kirim satu pesan tes ke channel tersebut.</li>
+          <li>Teruskan (Forward) pesan tes tersebut ke bot <a href="https://t.me/RawDataBot" target="_blank">@RawDataBot</a>.</li>
+          <li>Bot tersebut akan membalas dengan struktur data JSON. Cari bagian <code>forward_from_chat</code> -&gt; <code>id</code> (biasanya diawali tanda minus <code>-100</code>, misal: <code>-1003808532093</code>).</li>
+          <li>Salin seluruh nomor tersebut beserta minusnya dan tempel ke kolom Channel ID.</li>
+        </ul>
+      </div>
+    </div>
+    
   </div>
-  <a class="back" href="/drive">← Kembali ke Drive</a>
+  <div style="text-align:center;margin-top:16px">
+    <a href="/drive" style="color:var(--accent);text-decoration:none;font-size:13px;border-bottom:1px dashed var(--accent)">← Kembali ke Drive</a>
+  </div>
 </div>
 <script>
 const api=(u,o)=>fetch(u,{credentials:'same-origin',...o}).then(r=>r.json());
-async function doLogout(){await api('/api/logout',{method:'POST'});location.href='/';}
+let isAdmin=false;
+
+function switchTab(name){
+  document.querySelectorAll('.tab-content').forEach(el=>el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el=>el.classList.remove('active'));
+  const target=document.getElementById('content-'+name);
+  const btn=document.getElementById('tab-btn-'+name);
+  if(target) target.classList.add('active');
+  if(btn) btn.classList.add('active');
+  
+  let path='/settings';
+  if(name==='profile') path='/profile';
+  else if(name==='telegram') path='/settings/telegram';
+  
+  if(window.location.pathname!==path) window.history.pushState(null,'',path);
+}
+
 async function init(){
   const me=await api('/api/me');
   if(!me.logged_in){location.href='/';return;}
-  loadSettings();
-}
-async function loadSettings(){
-  const d=await api('/api/settings');
-  if(!d.settings)return;
-  const s=d.settings;
-  for(const k of ['API_ID','API_HASH','BOT_TOKEN','CHANNEL','GDRIVE_CLIENT_ID','GDRIVE_CLIENT_SECRET','PHOTOS_CLIENT_ID','PHOTOS_CLIENT_SECRET']){
-    const el=document.getElementById(k);
-    if(el&&s[k]!=null)el.value=s[k];
+  
+  // Check admin access to show Google tab
+  const gs=await api('/api/settings');
+  if(gs.settings){
+    isAdmin=true;
+    document.getElementById('tab-btn-google').classList.remove('hidden');
+    for(const k of ['GDRIVE_CLIENT_ID','GDRIVE_CLIENT_SECRET','PHOTOS_CLIENT_ID','PHOTOS_CLIENT_SECRET']){
+      const el=document.getElementById(k);
+      if(el&&gs.settings[k]!=null) el.value=gs.settings[k];
+    }
   }
+  
+  // Load profile
+  const prof=await api('/api/profile');
+  if(prof.profile){
+    const p=prof.profile;
+    if(p.name) document.getElementById('name').value=p.name||'';
+    if(p.email) document.getElementById('email').value=p.email||'';
+    if(p.phone) document.getElementById('phone').value=p.phone||'';
+    if(p.bio) document.getElementById('bio').value=p.bio||'';
+    if(p.photo_url){
+      document.getElementById('avatar').innerHTML='<img src="'+p.photo_url+'" style="width:100%;height:100%;object-fit:cover">';
+      document.getElementById('removePhoto').style.display='block';
+    }
+  }
+  
+  // Load telegram settings
+  const tg=await api('/api/settings/telegram');
+  if(tg){
+    if(tg.api_id) document.getElementById('api_id').value=tg.api_id;
+    if(tg.channel_id) document.getElementById('channel_id').value=tg.channel_id;
+    if(tg.api_hash_set) document.getElementById('api_hash').placeholder='[SUDAH DISIMPAN] Masukkan untuk mengganti';
+    if(tg.bot_token_set) document.getElementById('bot_token').placeholder='[SUDAH DISIMPAN] Masukkan untuk mengganti';
+  }
+  
+  // Detect initial tab from URL path
+  const path = window.location.pathname;
+  if(path.includes('/profile')) switchTab('profile');
+  else if(path.includes('/settings/telegram')) switchTab('telegram');
+  else if(path.includes('/settings')) switchTab('google');
+  else switchTab('profile');
 }
-function setMsg(text,kind){
-  const m=document.getElementById('msg');
-  m.textContent=text;m.className='msg'+(kind?' '+kind:'');
-}
-async function saveSettings(e){
+
+function setMsg(id,text,kind){const m=document.getElementById(id);m.textContent=text;m.className='msg'+(kind?' '+kind:'');}
+
+async function saveProfile(e){
   e.preventDefault();
-  const btn=document.getElementById('saveBtn');
+  const btn=document.getElementById('saveProfileBtn');
   btn.disabled=true;
-  setMsg('');
-  const body={};
-  for(const k of ['API_ID','API_HASH','BOT_TOKEN','CHANNEL','GDRIVE_CLIENT_ID','GDRIVE_CLIENT_SECRET','PHOTOS_CLIENT_ID','PHOTOS_CLIENT_SECRET']){
-    const el=document.getElementById(k);
-    body[k]=el.value;
-  }
-  const d=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(d.ok){setMsg('✅ Pengaturan tersimpan','ok');loadSettings();}
-  else{setMsg('❌ '+(d.error||'Gagal'),'err');}
+  setMsg('profileMsg','Menyimpan...','ok');
+  const d=await api('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    name:document.getElementById('name').value,email:document.getElementById('email').value,phone:document.getElementById('phone').value,bio:document.getElementById('bio').value
+  })});
+  if(d.ok) setMsg('profileMsg','✅ Profil tersimpan','ok');
+  else setMsg('profileMsg','❌ '+(d.error||'Gagal'),'err');
   btn.disabled=false;
 }
-async function testTelegram(){
+
+async function uploadPhoto(){
+  const f=document.getElementById('photoInput').files[0];
+  if(!f)return;
+  const fd=new FormData();fd.append('photo',f);
+  setMsg('profileMsg','','ok');
+  const r=await fetch('/api/profile/photo',{method:'POST',body:fd,credentials:'same-origin'});
+  const d=await r.json();
+  if(d.ok){
+    document.getElementById('avatar').innerHTML='<img src="'+d.photo_url+'" style="width:100%;height:100%;object-fit:cover">';
+    document.getElementById('removePhoto').style.display='block';
+    setMsg('profileMsg','✅ Foto diperbarui','ok');
+  } else setMsg('profileMsg','❌ '+(d.error||'Gagal'),'err');
+}
+
+async function removePhoto(){
+  document.getElementById('avatar').innerHTML='👤';
+  document.getElementById('removePhoto').style.display='none';
+  setMsg('profileMsg','ℹ️ Foto dihapus dari tampilan (reload untuk mengembalikan)','ok');
+}
+
+async function saveTgSettings(e){
+  e.preventDefault();
+  const btn=document.getElementById('saveTgBtn');
+  btn.disabled=true;
+  setMsg('tgMsg','Menyimpan...','ok');
+  const body={
+    api_id:document.getElementById('api_id').value,
+    api_hash:document.getElementById('api_hash').value,
+    bot_token:document.getElementById('bot_token').value,
+    channel_id:document.getElementById('channel_id').value
+  };
+  const d=await api('/api/settings/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(d.ok){
+    setMsg('tgMsg','✅ Pengaturan Telegram tersimpan','ok');
+    document.getElementById('api_hash').value='';
+    document.getElementById('bot_token').value='';
+    // Reload to refresh placeholders
+    const tg=await api('/api/settings/telegram');
+    if(tg.api_hash_set) document.getElementById('api_hash').placeholder='[SUDAH DISIMPAN] Masukkan untuk mengganti';
+    if(tg.bot_token_set) document.getElementById('bot_token').placeholder='[SUDAH DISIMPAN] Masukkan untuk mengganti';
+  } else setMsg('tgMsg','❌ '+(d.error||'Gagal menyimpan'),'err');
+  btn.disabled=false;
+}
+
+async function testConnection(){
   const btn=document.getElementById('testBtn');
   btn.disabled=true;
-  setMsg('Menguji koneksi...');
-  const d=await api('/api/settings/test-telegram',{method:'POST'});
-  if(d.connected){setMsg('✅ Terhubung sebagai @'+(d.username||'?'),'ok');}
-  else{setMsg('❌ '+(d.error||'Gagal terhubung'),'err');}
+  setMsg('tgMsg','Menguji koneksi ke Telegram...','ok');
+  const d=await api('/api/settings/telegram/test',{method:'POST'});
+  if(d.connected) setMsg('tgMsg','✅ Terhubung ke '+(d.channel||'channel')+(d.username?' via @'+d.username:''),'ok');
+  else setMsg('tgMsg','❌ '+(d.error||'Koneksi gagal'),'err');
   btn.disabled=false;
 }
+
+async function saveGoogleSettings(e){
+  e.preventDefault();
+  const btn=document.getElementById('saveGoogleBtn');
+  btn.disabled=true;
+  setMsg('googleMsg','');
+  const body={};
+  for(const k of ['GDRIVE_CLIENT_ID','GDRIVE_CLIENT_SECRET','PHOTOS_CLIENT_ID','PHOTOS_CLIENT_SECRET']){
+    body[k]=document.getElementById(k).value;
+  }
+  const d=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(d.ok) setMsg('googleMsg','✅ Pengaturan tersimpan','ok');
+  else setMsg('googleMsg','❌ '+(d.error||'Gagal'),'err');
+  btn.disabled=false;
+}
+
 async function restartService(){
   const btn=document.getElementById('restartBtn');
   btn.disabled=true;
-  setMsg('Memulai ulang layanan...');
+  setMsg('googleMsg','Memulai ulang layanan...','ok');
   const d=await api('/api/settings/restart',{method:'POST'});
-  if(d.ok){setMsg('✅ Layanan sedang di-restart','ok');}
-  else{setMsg('❌ '+(d.error||'Gagal restart'),'err');}
+  if(d.ok) setMsg('googleMsg','✅ Layanan sedang di-restart','ok');
+  else setMsg('googleMsg','❌ '+(d.error||'Gagal restart'),'err');
   btn.disabled=false;
 }
+
+async function doLogout(){await api('/api/logout',{method:'POST'});location.href='/';}
+
+window.addEventListener('popstate',()=>{
+  const path = window.location.pathname;
+  if(path.includes('/profile')) switchTab('profile');
+  else if(path.includes('/settings/telegram')) switchTab('telegram');
+  else switchTab('google');
+});
+
 init();
 </script>
 </body>
@@ -2701,13 +2762,6 @@ def register_drive_features(flask_app, mount_prefix=""):
     init_drive_db()
     flask_app.register_blueprint(drive_ext, url_prefix=mount_prefix)
     return flask_app
-
-# Convenience: if imported as part of web.py, register automatically.
-if _HAS_HOST:
-    try:
-        register_drive_features(_host_app)
-    except Exception as e:  # pragma: no cover
-        print(f"[web_drive] auto-register skipped: {e}")
 
 if __name__ == "__main__":
     # Standalone smoke test

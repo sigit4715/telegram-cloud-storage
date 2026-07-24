@@ -81,7 +81,7 @@ class MultiAccountIsolationTest(unittest.TestCase):
         self.login(self.owner_b)
         fake_message = type("Message", (), {"id": 303})()
         fake_client = type("Client", (), {"send_file": lambda *args, **kwargs: object()})()
-        with patch.object(web, "telethon_client", fake_client), patch.object(web, "run_async", return_value=fake_message):
+        with patch.object(web, "get_telegram_client", return_value=fake_client), patch.object(web, "telegram_target", return_value=-100303), patch.object(web, "run_async", return_value=fake_message):
             resp = self.client.post("/api/upload", data={"files": (tempfile.SpooledTemporaryFile(), "baru.txt"), "folder_id": "0"}, content_type="multipart/form-data")
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.get_json()["results"][0]["ok"])

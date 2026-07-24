@@ -10,16 +10,24 @@ import sqlite3
 import hashlib
 import asyncio
 import threading
+import sys
 from datetime import datetime
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_file, send_from_directory, redirect, url_for, session
 from urllib.parse import urlencode
 from werkzeug.middleware.proxy_fix import ProxyFix
-from web_drive import register_drive_features
-from telethon import TelegramClient
-from telethon.tl.types import DocumentAttributeFilename
-from telethon.errors import FloodWaitError
+try:
+    from telethon import TelegramClient
+    from telethon.tl.types import DocumentAttributeFilename
+    from telethon.errors import FloodWaitError
+except ModuleNotFoundError:  # local non-Telethon test environments
+    TelegramClient = None
+    class DocumentAttributeFilename:  # pragma: no cover
+        pass
+    class FloodWaitError(Exception):  # pragma: no cover
+        seconds = 0
+import telegram_accounts as telegram_accounts
 
 # ============================================================
 # CONFIG
@@ -55,11 +63,14 @@ GOOGLE_ALLOWED_EMAILS = set()
 ADMIN_IDS = {"5337119189"}
 
 # ============================================================
-# TELETHON (async bridge)
+# TELEGRAM PER ACCOUNT (async bridge)
 # ============================================================
+# Legacy globals remain only for boot-time migration of Bowor's existing storage.
 telethon_client = None
 _loop = None
 _loop_lock = threading.Lock()
+TELEGRAM_CONFIG_KEY = os.environ.get("TELEGRAM_CONFIG_KEY") or cfg.get("TELEGRAM_CONFIG_KEY") or telegram_accounts.load_or_create_master_key(BASE)
+LEGACY_TELEGRAM_OWNER = "bowor4751@gmail.com"
 
 def get_loop():
     global _loop
@@ -67,18 +78,79 @@ def get_loop():
         with _loop_lock:
             if _loop is None:
                 _loop = asyncio.new_event_loop()
-                threading.Thread(target=_loop.run_forever, daemon=True).start()
+                ready = threading.Event()
+                def _run_loop():
+                    asyncio.set_event_loop(_loop)
+                    ready.set()
+                    _loop.run_forever()
+                threading.Thread(target=_run_loop, daemon=True).start()
+                ready.wait(timeout=5)
     return _loop
 
 def run_async(coro):
     return asyncio.run_coroutine_threadsafe(coro, get_loop()).result(timeout=120)
 
+def telegram_config(owner=None):
+    """Return only the authenticated owner's decrypted Telegram target config."""
+    return telegram_accounts.get_account_config(DB_PATH, TELEGRAM_CONFIG_KEY, owner or current_owner(), allow_missing=True)
+
+def require_telegram_config(owner=None):
+    config = telegram_config(owner)
+    if not config:
+        raise RuntimeError("Telegram belum dikonfigurasi. Buka Pengaturan Telegram terlebih dahulu.")
+    return config
+
+async def _new_owner_client(config):
+    if TelegramClient is None:
+        raise RuntimeError("Telethon belum terpasang di environment ini")
+    client = TelegramClient(config["session_path"], int(config["api_id"]), config["api_hash"])
+    await client.start(bot_token=config["bot_token"])
+    return client
+
+async def _disconnect_client(client):
+    if client:
+        await client.disconnect()
+
+def close_telegram_client(owner):
+    client = telegram_accounts.pop_client(owner)
+    if client:
+        run_async(_disconnect_client(client))
+
+def get_telegram_client(owner=None):
+    """Obtain the cached Telethon Bot client belonging exclusively to owner."""
+    owner = (owner or current_owner()).strip().lower()
+    client = telegram_accounts.get_client(owner)
+    if client:
+        return client
+    config = require_telegram_config(owner)
+    client = run_async(_new_owner_client(config))
+    telegram_accounts.set_client(owner, client)
+    return client
+
+def telegram_target(owner=None):
+    channel = int(require_telegram_config(owner)["channel_id"])
+    # Telethon bots can only resolve channels when passed as a
+    # ``-100...`` supergroup/channel ID.  A plain positive number is
+    # interpreted as PeerUser and raises "Could not find the input
+    # entity for PeerUser …".  The legacy database stored bare channel
+    # IDs; normalise them here once.
+    return channel if channel < 0 else -int("100" + str(channel))
+
+def telegram_for_owner(owner=None):
+    owner = (owner or current_owner()).strip().lower()
+    return get_telegram_client(owner), telegram_target(owner)
+
 async def _init_telethon():
+    # Kept for compatibility with service startup. Per-account clients are lazy.
     global telethon_client
-    telethon_client = TelegramClient(SESSION, API_ID, API_HASH)
-    await telethon_client.start(bot_token=BOT_TOKEN)
+    config = telegram_config(LEGACY_TELEGRAM_OWNER)
+    if not config:
+        print("[Telethon] No legacy account config yet; awaiting per-account setup")
+        return
+    telethon_client = await _new_owner_client(config)
+    telegram_accounts.set_client(LEGACY_TELEGRAM_OWNER, telethon_client)
     me = await telethon_client.get_me()
-    print(f"[Telethon] Bot: @{me.username} id={me.id}")
+    print(f"[Telethon] Legacy account bot: @{me.username} id={me.id}")
 
 # ============================================================
 # DATABASE
@@ -171,6 +243,12 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_owner_parent ON folders(owner_email, parent_id)")
     conn.commit()
     conn.close()
+    telegram_accounts.init_telegram_accounts(DB_PATH)
+    # Existing global credentials are migrated once to Bowor's original tenant.
+    telegram_accounts.migrate_legacy_config(DB_PATH, TELEGRAM_CONFIG_KEY, LEGACY_TELEGRAM_OWNER, {
+        "API_ID": cfg.get("API_ID", ""), "API_HASH": cfg.get("API_HASH", ""),
+        "BOT_TOKEN": cfg.get("BOT_TOKEN", ""), "CHANNEL": cfg.get("CHANNEL", "")
+    })
 
 def human_size(n):
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -283,7 +361,7 @@ def api_folders_delete(fid):
         file_rows = db_query("SELECT id, msg_id FROM files WHERE folder_id=? AND owner_email=?", (parent_id, owner))
         for fr in file_rows:
             try:
-                run_async(telethon_client.delete_messages(CHANNEL, [fr["msg_id"]]))
+                run_async(get_telegram_client(owner).delete_messages(telegram_target(owner), [fr["msg_id"]]))
             except:
                 pass
             db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (fr["id"], owner))
@@ -293,7 +371,7 @@ def api_folders_delete(fid):
     file_rows = db_query("SELECT id, msg_id FROM files WHERE folder_id=? AND owner_email=?", (fid, owner))
     for fr in file_rows:
         try:
-            run_async(telethon_client.delete_messages(CHANNEL, [fr["msg_id"]]))
+            run_async(get_telegram_client(owner).delete_messages(telegram_target(owner), [fr["msg_id"]]))
         except:
             pass
         db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (fr["id"], owner))
@@ -411,8 +489,8 @@ def api_upload():
 
         try:
             is_img = mime.startswith('image/')
-            forwarded = run_async(telethon_client.send_file(
-                CHANNEL,
+            forwarded = run_async(get_telegram_client(owner).send_file(
+                telegram_target(owner),
                 file=data,
                 caption=f"cloud:{folder_id}:{name}",
                 force_document=not is_img,
@@ -437,12 +515,13 @@ def api_download(fid):
     if not row:
         return jsonify({"error": "Not found"}), 404
     r = row[0]
+    owner_dl = current_owner()
     try:
-        msg = run_async(telethon_client.get_messages(CHANNEL, ids=r["msg_id"]))
+        msg = run_async(get_telegram_client(owner_dl).get_messages(telegram_target(owner_dl), ids=r["msg_id"]))
         if not msg or not msg.media:
             return jsonify({"error": "File removed"}), 404
         buf = io.BytesIO()
-        run_async(telethon_client.download_media(msg.media, file=buf))
+        run_async(get_telegram_client(owner_dl).download_media(msg.media, file=buf))
         buf.seek(0)
         return send_file(buf, mimetype=r["mime"] or "application/octet-stream",
                          as_attachment=True, download_name=r["file_name"])
@@ -456,12 +535,13 @@ def api_preview(fid):
     if not row:
         return jsonify({"error": "Not found"}), 404
     r = row[0]
+    owner_preview_file = current_owner()
     try:
-        msg = run_async(telethon_client.get_messages(CHANNEL, ids=r["msg_id"]))
+        msg = run_async(get_telegram_client(owner_preview_file).get_messages(telegram_target(owner_preview_file), ids=r["msg_id"]))
         if not msg or not msg.media:
             return jsonify({"error": "File removed"}), 404
         buf = io.BytesIO()
-        run_async(telethon_client.download_media(msg.media, file=buf))
+        run_async(get_telegram_client(owner_preview_file).download_media(msg.media, file=buf))
         buf.seek(0)
         return send_file(buf, mimetype=r["mime"] or "application/octet-stream")
     except Exception as e:
@@ -479,12 +559,13 @@ def api_stream(fid):
     file_name = r["file_name"] if hasattr(r,"keys") else r[0]
     msg_id    = r["msg_id"]   if hasattr(r,"keys") else r[1]
     file_size = r["size"]     if hasattr(r,"keys") else r[3]
+    owner_preview = current_owner()
     try:
-        msg = run_async(telethon_client.get_messages(CHANNEL, ids=msg_id))
+        msg = run_async(get_telegram_client(owner_preview).get_messages(telegram_target(owner_preview), ids=msg_id))
         if not msg or not msg.media:
             return jsonify({"error": "File removed"}), 404
         buf = io.BytesIO()
-        run_async(telethon_client.download_media(msg.media, file=buf))
+        run_async(get_telegram_client(owner_preview).download_media(msg.media, file=buf))
         data = buf.getvalue()
         total = len(data)
         range_hdr = request.headers.get("Range")
@@ -527,12 +608,13 @@ def api_office_preview(fid):
     file_name = os.path.basename(r["file_name"] if hasattr(r,"keys") else r[0])
     msg_id    = r["msg_id"]   if hasattr(r,"keys") else r[1]
     ext = os.path.splitext(file_name)[1].lower()
+    owner_office = current_owner()
     try:
-        msg = run_async(telethon_client.get_messages(CHANNEL, ids=msg_id))
+        msg = run_async(get_telegram_client(owner_office).get_messages(telegram_target(owner_office), ids=msg_id))
         if not msg or not msg.media:
             return jsonify({"error": "File removed"}), 404
         buf = io.BytesIO()
-        run_async(telethon_client.download_media(msg.media, file=buf))
+        run_async(get_telegram_client(owner_office).download_media(msg.media, file=buf))
         tmpdir = _tf.mkdtemp(prefix="cspreview_")
         try:
             src = os.path.join(tmpdir, file_name)
@@ -630,8 +712,9 @@ def api_permanently_delete_trash(fid):
     row = db_query("SELECT id, msg_id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NOT NULL", (fid, current_owner()))
     if not row:
         return jsonify({"error": "Not found in Trash"}), 404
+    owner_perm = current_owner()
     try:
-        run_async(telethon_client.delete_messages(CHANNEL, [row[0]["msg_id"]]))
+        run_async(get_telegram_client(owner_perm).delete_messages(telegram_target(owner_perm), [row[0]["msg_id"]]))
     except Exception as e:
         return jsonify({"error": f"Telegram delete failed: {e}"}), 502
     db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (fid, current_owner()))
@@ -645,7 +728,7 @@ def api_empty_trash():
     deleted = 0
     for row in rows:
         try:
-            run_async(telethon_client.delete_messages(CHANNEL, [row["msg_id"]]))
+            run_async(get_telegram_client(owner).delete_messages(telegram_target(owner), [row["msg_id"]]))
             db_exec("DELETE FROM files WHERE id=? AND owner_email=?", (row["id"], owner))
             deleted += 1
         except Exception:
@@ -768,12 +851,13 @@ def api_thumb(fid):
     mime = r["mime"] or ""
     if not mime.startswith("image/"):
         return "", 404
+    owner_thumb = current_owner()
     try:
-        msg = run_async(telethon_client.get_messages(CHANNEL, ids=r["msg_id"]))
+        msg = run_async(get_telegram_client(owner_thumb).get_messages(telegram_target(owner_thumb), ids=r["msg_id"]))
         if not msg or not msg.media:
             return "", 404
         buf = io.BytesIO()
-        run_async(telethon_client.download_media(msg.media, file=buf))
+        run_async(get_telegram_client(owner_thumb).download_media(msg.media, file=buf))
         buf.seek(0)
         from PIL import Image
         img = Image.open(buf)
@@ -831,6 +915,11 @@ def icon_asset(filename):
 
 @app.route("/")
 def login_page():
+    uid = session.get("user_id")
+    g_email = session.get("google_email", "").lower()
+    is_allowed = (uid and uid in ALLOWED) or (uid and uid.lower() in GOOGLE_ALLOWED_EMAILS) or (g_email and g_email in GOOGLE_ALLOWED_EMAILS)
+    if uid and (not GOOGLE_ALLOWED_EMAILS or is_allowed or uid in ADMIN_IDS):
+        return redirect(url_for("drive_page"))
     return LOGIN_HTML
 
 
@@ -1129,7 +1218,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
  .files-panel{padding:9px;border-radius:9px;margin-bottom:0}.files-panel .panel-title{font-size:.77rem;margin-bottom:5px}.files-table th{padding:4px 7px;font-size:.57rem}.files-table td{padding:4px 7px;font-size:.61rem;height:38px}.files-table .fname-cell{gap:6px}.files-table .fname-cell>img,.files-table .fname-cell .ficon{width:26px;height:28px}.files-table .fname-cell .ficon .cs-file-icon{width:23px;height:28px}.files-table .owner-badge{padding:2px 7px;font-size:.56rem}.pagination{display:flex}
  .right-card{padding:10px;margin-bottom:8px;border-radius:9px}.right-card .rc-title{font-size:.73rem;margin-bottom:6px}.donut-wrap{padding:2px 0}.donut-center .d-icon{font-size:1rem}.donut-center .d-label{font-size:.55rem}.donut-legend{gap:3px;margin-top:5px}.donut-legend .dl{font-size:.61rem}.storage-btn{padding:6px;font-size:.61rem;margin-top:6px}.type-list{gap:3px}.type-item{gap:6px;font-size:.6rem}.type-item .ti-icon{width:23px;height:23px}.type-item .ti-icon .cs-icon{width:18px;height:18px}.see-all{margin-top:5px;font-size:.6rem}.recent-mini{gap:5px}.recent-mini .rm{gap:6px}.recent-mini .rm .rm-icon{width:25px;height:27px}.recent-mini .rm .rm-icon .cs-file-icon{width:22px;height:27px}.recent-mini .rm .rm-name{font-size:.59rem}.recent-mini .rm .rm-date{font-size:.5rem}
 }
-@media(max-width:1100px){.right-sidebar{display:none}.main-wrap{margin-right:0}}
+@media(max-width:1100px){.right-sidebar{position:static;width:100%;border-left:none;border-top:1px solid var(--border);padding:12px;display:flex;gap:12px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}.right-card{min-width:240px;flex:1 0 240px;margin-bottom:0}.main-wrap{margin-right:0}}
 @media(max-width:768px){.sidebar{display:none}.main-wrap{margin-left:0}.stats{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){
   body{display:block;min-height:100vh;padding-bottom:60px}
@@ -1169,7 +1258,7 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
 }
 @media(min-width:601px){.mobile-menu-btn,.mobile-bottom-nav,.mobile-sidebar-backdrop{display:none!important}}
 /* ===== EMBEDDED GOOGLE DRIVE ===== */
-.gdrive-panel,.gphotos-panel{display:none}.gdrive-mode .stats,.gdrive-mode .breadcrumb,.gdrive-mode .toolbar,.gdrive-mode .drop-zone,.gdrive-mode .selected-bar,.gdrive-mode .folder-heading,.gdrive-mode .folder-grid,.gdrive-mode .files-panel,.gphotos-mode .stats,.gphotos-mode .breadcrumb,.gphotos-mode .toolbar,.gphotos-mode .drop-zone,.gphotos-mode .selected-bar,.gphotos-mode .folder-heading,.gphotos-mode .folder-grid,.gphotos-mode .files-panel{display:none}.gdrive-mode .gdrive-panel,.gphotos-mode .gphotos-panel{display:block}.gdrive-mode .right-sidebar,.gphotos-mode .right-sidebar{display:none}.gdrive-mode .main-wrap,.gphotos-mode .main-wrap{margin-right:0;max-width:none}.gphotos-panel{height:calc(100vh - 115px);min-height:650px;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--bg2)}.gphotos-frame{display:block;width:100%;height:100%;border:0;background:var(--bg)}.gdrive-hero{background:linear-gradient(135deg,rgba(38,27,79,.9),rgba(16,20,40,.96));border:1px solid var(--border);border-radius:16px;padding:25px;box-shadow:0 0 28px rgba(139,92,246,.12)}.gd-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.gd-title{display:flex;align-items:center;gap:13px}.gd-title .gd-logo{width:42px;height:42px}.gd-title h1{font-size:1.45rem}.gd-title p{font-size:.84rem;color:var(--muted);margin-top:5px}.gd-connection{display:flex;gap:10px;align-items:center}.gd-status{border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.09);color:#a7f3d0;border-radius:999px;padding:8px 14px;font-size:.78rem;display:inline-flex;align-items:center}.gd-status-dot{display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:8px}.gd-status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+.gdrive-panel,.gphotos-panel,.settings-panel{display:none}.gdrive-mode .stats,.gdrive-mode .breadcrumb,.gdrive-mode .toolbar,.gdrive-mode .drop-zone,.gdrive-mode .selected-bar,.gdrive-mode .folder-heading,.gdrive-mode .folder-grid,.gdrive-mode .files-panel,.gphotos-mode .stats,.gphotos-mode .breadcrumb,.gphotos-mode .toolbar,.gphotos-mode .drop-zone,.gphotos-mode .selected-bar,.gphotos-mode .folder-heading,.gphotos-mode .folder-grid,.gphotos-mode .files-panel,.telegram-settings-mode .breadcrumb,.telegram-settings-mode .toolbar:not(.telegram-settings-card .toolbar),.telegram-settings-mode .drop-zone,.telegram-settings-mode .selected-bar,.telegram-settings-mode .folder-heading,.telegram-settings-mode .folder-grid,.telegram-settings-mode .files-panel{display:none}.tab-btn{padding:12px 18px;cursor:pointer;color:var(--muted);font-weight:600;font-size:14px;border-bottom:3px solid transparent;transition:.2s;white-space:nowrap;background:transparent;border-top:0;border-left:0;border-right:0}.tab-btn:hover{color:var(--accent2)}.tab-btn.active{color:var(--accent2);border-bottom-color:var(--accent)}.tab-content{display:none}.tab-content.active{display:block}.gdrive-mode .gdrive-panel,.gphotos-mode .gphotos-panel,.telegram-settings-mode #telegramSettingsPanel{display:block !important}.telegram-settings-card{max-width:640px}.telegram-settings-card input{width:100%;margin-top:6px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:10px}.telegram-settings-card .form-group{margin:13px 0}.telegram-settings-card .toolbar{margin-top:18px}.telegram-settings-card .muted{min-height:22px;margin-top:10px}.gdrive-mode .right-sidebar,.gphotos-mode .right-sidebar{display:none}.gdrive-mode .main-wrap,.gphotos-mode .main-wrap{margin-right:0;max-width:none}.gphotos-panel{height:calc(100vh - 115px);min-height:650px;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--bg2)}.gphotos-frame{display:block;width:100%;height:100%;border:0;background:var(--bg)}.gdrive-hero{background:linear-gradient(135deg,rgba(38,27,79,.9),rgba(16,20,40,.96));border:1px solid var(--border);border-radius:16px;padding:25px;box-shadow:0 0 28px rgba(139,92,246,.12)}.gd-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.gd-title{display:flex;align-items:center;gap:13px}.gd-title .gd-logo{width:42px;height:42px}.gd-title h1{font-size:1.45rem}.gd-title p{font-size:.84rem;color:var(--muted);margin-top:5px}.gd-connection{display:flex;gap:10px;align-items:center}.gd-status{border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.09);color:#a7f3d0;border-radius:999px;padding:8px 14px;font-size:.78rem;display:inline-flex;align-items:center}.gd-status-dot{display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:8px}.gd-status-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
 .gd-btn{appearance:none;-webkit-appearance:none;border-radius:12px;padding:9px 16px;font-size:.82rem;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;transition:all .2s ease;outline:none;border:1px solid transparent}
 .gd-btn-connect{background:linear-gradient(135deg,#10b981,#059669);color:#fff;border-color:#10b981;box-shadow:0 6px 18px rgba(16,185,129,.25)}
 .gd-btn-connect:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(16,185,129,.35)}
@@ -1198,6 +1287,8 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
     <div class="nav-item" data-nav="favorites" onclick="openNav('favorites',this)"><img class="cs-icon" src="/icons/ui/favorites.svg" alt=""> Favorites</div>
     <div class="nav-item" data-nav="shared" onclick="openNav('shared',this)"><img class="cs-icon" src="/icons/ui/shared-with-me.svg" alt=""> Shared with me</div>
     <div class="nav-item" data-nav="trash" onclick="openNav('trash',this)"><img class="cs-icon" src="/icons/ui/trash.svg" alt=""> Trash</div>
+    <div class="nav-divider nav-provider-divider"></div>
+    <div class="nav-item" data-nav="settings" onclick="openSettingsPanel(this, 'telegram')"><span>⚙</span> Pengaturan Telegram</div>
   </div>
   <div class="nav-divider"></div>
   <div class="storage-card-side">
@@ -1221,12 +1312,100 @@ html[data-theme="light"] .storage-card-main{box-shadow:0 10px 25px rgba(31,41,55
     </div>
     <span class="user-id" id="userId"></span>
     <button class="btn mobile-menu-btn" onclick="toggleMobileSidebar()" type="button" aria-label="Menu">☰</button>
-    <button class="btn" onclick="location.href='/profile'"><img class="cs-icon sm" src="/icons/ui/profile.svg" alt=""> Profile</button>
+    <button class="btn" onclick="openSettingsPanel(this, 'profile')"><img class="cs-icon sm" src="/icons/ui/profile.svg" alt=""> Profile</button>
     <button class="btn danger" onclick="doLogout()"><img class="cs-icon sm" src="/icons/ui/logout.svg" alt=""> Logout</button>
   </div>
 
   <!-- STATS -->
   <div class="stats" id="stats"></div>
+
+  <!-- TABBED INTEGRATED SETTINGS PANEL -->
+  <div id="telegramSettingsPanel" class="settings-panel" style="display:none;max-width:640px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;margin:0 auto 20px">
+    <div class="tabs" id="settingsTabs" style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:24px;overflow-x:auto">
+      <button class="tab-btn" id="tab-btn-profile" onclick="openSettingsPanel(this,'profile')">👤 Profil</button>
+      <button class="tab-btn active" id="tab-btn-telegram" onclick="openSettingsPanel(this,'telegram')">✈️ Telegram</button>
+      <button class="tab-btn" id="tab-btn-google" onclick="openSettingsPanel(this,'google')" style="display:none">⚙️ Google</button>
+      <button class="tab-btn" id="tab-btn-tutorial" onclick="openSettingsPanel(this,'tutorial')">📖 Tutorial</button>
+    </div>
+
+    <!-- PROFIL -->
+    <div id="content-profile" class="tab-content">
+      <div style="display:flex;align-items:center;gap:20px;margin-bottom:28px">
+        <div id="avatar" style="width:96px;height:96px;border-radius:50%;background:var(--bg3);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:36px;color:var(--accent);overflow:hidden;flex-shrink:0">👤</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn" onclick="document.getElementById('photoInput').click()" style="padding:8px 16px;border-radius:8px;font-size:13px;background:var(--bg3);border:1px solid var(--border)">📷 Ganti Foto</button>
+          <button class="btn" id="removePhoto" style="display:none;padding:8px 16px;border-radius:8px;font-size:13px;color:var(--red);border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.1)" onclick="removePhoto()">🗑 Hapus Foto</button>
+          <input type="file" id="photoInput" accept="image/*" hidden onchange="uploadPhoto()">
+        </div>
+      </div>
+      <form id="profileForm" onsubmit="saveProfile(event)">
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Nama</label><input type="text" id="name" placeholder="Nama lengkap" maxlength="100" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Email</label><input type="email" id="email" placeholder="email@example.com" maxlength="150" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Telepon</label><input type="text" id="phone" placeholder="+62..." maxlength="30" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Bio</label><textarea id="bio" placeholder="Tentang anda..." maxlength="500" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text);resize:vertical;min-height:80px"></textarea></div>
+        <button type="submit" class="btn primary" id="saveProfileBtn" style="width:100%;padding:14px;font-weight:600">💾 Simpan Profil</button>
+      </form>
+      <div class="muted" id="profileMsg" style="margin-top:14px;text-align:center"></div>
+    </div>
+
+    <!-- TELEGRAM -->
+    <div id="content-telegram" class="tab-content active">
+      <form id="tgSettingsForm" onsubmit="saveTgSettings(event)">
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">API ID</label><input type="number" id="api_id" placeholder="Contoh: 123456" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">API Hash</label><input type="password" id="api_hash" autocomplete="new-password" placeholder="Masukkan API Hash" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Bot Token</label><input type="password" id="bot_token" autocomplete="new-password" placeholder="123456:AA..." style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Channel ID</label><input type="text" id="channel_id" placeholder="-1001234567890" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <button type="submit" class="btn primary" id="saveTgBtn" style="width:100%;padding:14px;font-weight:600">💾 Simpan Pengaturan</button>
+      </form>
+      <div style="margin-top:12px"><button class="btn" id="testTgBtn" onclick="testTelegramSettingsNew()" style="width:100%;padding:12px;background:var(--bg3);border:1px solid var(--border)">🔌 Uji Koneksi</button></div>
+      <div class="muted" id="tgMsg" style="margin-top:14px;text-align:center"></div>
+    </div>
+
+    <!-- GOOGLE -->
+    <div id="content-google" class="tab-content">
+      <form id="googleSettingsForm" onsubmit="saveGoogleSettings(event)">
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Google Drive Client ID</label><input type="text" id="GDRIVE_CLIENT_ID" placeholder="....apps.googleusercontent.com" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Google Drive Client Secret</label><input type="text" id="GDRIVE_CLIENT_SECRET" placeholder="GOCSPX-..." style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Google Photos Client ID</label><input type="text" id="PHOTOS_CLIENT_ID" placeholder="....apps.googleusercontent.com" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <div class="form-group" style="margin-bottom:18px"><label style="display:block;font-size:13px;color:var(--accent2);margin-bottom:6px">Google Photos Client Secret</label><input type="text" id="PHOTOS_CLIENT_SECRET" placeholder="GOCSPX-..." style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text)"></div>
+        <button type="submit" class="btn primary" id="saveGoogleBtn" style="width:100%;padding:14px;font-weight:600">💾 Simpan Kredensial Google</button>
+      </form>
+      <div style="margin-top:12px"><button class="btn" id="restartBtn" onclick="restartServiceNew()" style="width:100%;padding:12px;background:var(--bg3);border:1px solid var(--border)">🔄 Restart Layanan</button></div>
+      <div class="muted" id="googleMsg" style="margin-top:14px;text-align:center"></div>
+    </div>
+
+    <!-- TUTORIAL -->
+    <div id="content-tutorial" class="tab-content">
+      <div class="tutorial" style="line-height:1.6;font-size:13.5px;color:rgba(224,224,224,0.9)">
+        <h3 style="font-size:14px;color:var(--accent2);margin:10px 0 8px;font-weight:600">Panduan Pembuatan Kredensial Telegram</h3>
+        <p>Agar integrasi lancar, Anda membutuhkan <strong>API ID</strong>, <strong>API Hash</strong>, <strong>Bot Token</strong>, dan <strong>Channel ID</strong>.</p>
+        
+        <h4 style="font-size:13px;color:var(--accent);margin:12px 0 4px;font-weight:600">1. Cara Mendapatkan API ID & API Hash</h4>
+        <ul style="margin-left:18px;margin-bottom:10px">
+          <li>Buka situs resmi <a href="https://my.telegram.org/" target="_blank" style="color:var(--accent2)">my.telegram.org</a>.</li>
+          <li>Login dengan nomor HP terdaftar (Gunakan format +62...).</li>
+          <li>Kunjungi halaman <strong>API Development Tools</strong> dan buat App baru.</li>
+          <li>Salin <strong>App api_id</strong> dan <strong>App api_hash</strong> ke panel Telegram.</li>
+        </ul>
+        
+        <h4 style="font-size:13px;color:var(--accent);margin:12px 0 4px;font-weight:600">2. Cara Membuat Bot Token</h4>
+        <ul style="margin-left:18px;margin-bottom:10px">
+          <li>Chat bot resmi <a href="https://t.me/BotFather" target="_blank" style="color:var(--accent2)">@BotFather</a> di Telegram Anda.</li>
+          <li>Panggil perintah <code>/newbot</code> dan ikuti instruksinya.</li>
+          <li>Salin token bot unik berlatar belakang abu-abu yang diberikan.</li>
+        </ul>
+        
+        <h4 style="font-size:13px;color:var(--accent);margin:12px 0 4px;font-weight:600">3. Cara Mengetahui Channel ID</h4>
+        <ul style="margin-left:18px;margin-bottom:10px">
+          <li>Buat channel Telegram, masukkan bot Anda tadi sebagai <strong>Administrator</strong> (wajib punya hak posting).</li>
+          <li>Kirim pesan tes di channel, teruskan ke <a href="https://t.me/RawDataBot" target="_blank" style="color:var(--accent2)">@RawDataBot</a>.</li>
+          <li>Cari angka <code>id</code> (contoh: <code>-100223456789</code>).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+
 
   <!-- BREADCRUMB -->
   <div class="breadcrumb" id="breadcrumb"><a onclick="goFolder(0)">Home</a></div>
@@ -1433,7 +1612,7 @@ function setActiveNav(el){
   if(el)el.classList.add('active');
 }
 function closeProviderPanels(){
-  document.body.classList.remove('gdrive-mode','gphotos-mode');
+  document.body.classList.remove('gdrive-mode','gphotos-mode','telegram-settings-mode');
   document.getElementById('gdrivePanel').style.display='none';
   document.getElementById('gphotosPanel').style.display='none';
 }
@@ -1895,6 +2074,261 @@ function doMove(tf){var ids=[];selectedIds.forEach(function(id){ids.push(parseIn
 
 // Preview: image, video, audio, PDF, text/code, and Office via server-side PDF conversion.
 function closeFilePreview(){var box=document.getElementById('filePreview'),el=document.getElementById('previewContent');box.classList.remove('show');el.innerHTML='';}
+function switchSettingsTab(tab){
+  var contents = document.querySelectorAll('#telegramSettingsPanel .tab-content');
+  for (var i = 0; i < contents.length; i++) {
+    contents[i].classList.remove('active');
+  }
+  var btns = document.querySelectorAll('#telegramSettingsPanel .tab-btn');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].classList.remove('active');
+  }
+  var target = document.getElementById('content-'+tab);
+  var btn = document.getElementById('tab-btn-'+tab);
+  if(target) target.classList.add('active');
+  if(btn) btn.classList.add('active');
+}
+
+function openSettingsPanel(el, tab){
+  document.body.classList.remove('gdrive-mode','gphotos-mode','telegram-settings-mode');
+  document.body.classList.add('telegram-settings-mode');
+  
+  var navItems = document.querySelectorAll('.nav-item');
+  for (var i = 0; i < navItems.length; i++) {
+    navItems[i].classList.remove('active');
+  }
+  
+  var targetNav = el;
+  if (!el || el.tagName === 'BUTTON') {
+    targetNav = document.querySelector('[data-nav="settings"]');
+  }
+  if (targetNav) targetNav.classList.add('active');
+  
+  document.body.classList.remove('mobile-sidebar-open');
+  switchSettingsTab(tab||'telegram');
+  
+  fetch('/api/profile').then(function(r){return r.json()}).then(function(d){
+    if(d.profile){
+      var p=d.profile;
+      document.getElementById('name').value=p.name||'';
+      document.getElementById('email').value=p.email||'';
+      document.getElementById('phone').value=p.phone||'';
+      document.getElementById('bio').value=p.bio||'';
+      if(p.photo_url){
+        document.getElementById('avatar').innerHTML='<img src="'+p.photo_url+'" style="width:100%;height:100%;object-fit:cover">';
+        document.getElementById('removePhoto').style.display='block';
+      } else {
+        document.getElementById('removePhoto').style.display='none';
+      }
+    }
+  });
+  
+  fetch('/api/settings/telegram').then(function(r){return r.json()}).then(function(d){
+    document.getElementById('api_id').value=d.api_id||'';
+    document.getElementById('channel_id').value=d.channel_id||'';
+    document.getElementById('api_hash').value='';
+    document.getElementById('bot_token').value='';
+    document.getElementById('api_hash').placeholder=d.api_hash_set?'[SUDAH DISIMPAN] Masukkan untuk mengganti':'Masukkan API Hash';
+    document.getElementById('bot_token').placeholder=d.bot_token_set?'[SUDAH DISIMPAN] Masukkan untuk mengganti':'Masukkan Bot Token';
+  });
+  
+  fetch('/api/settings').then(function(r){return r.json()}).then(function(d){
+    if(d.settings){
+      document.getElementById('tab-btn-google').style.display='inline-block';
+      var keys = ['GDRIVE_CLIENT_ID','GDRIVE_CLIENT_SECRET','PHOTOS_CLIENT_ID','PHOTOS_CLIENT_SECRET'];
+      for(var i=0; i<keys.length; i++){
+        var k = keys[i];
+        var el_g=document.getElementById(k);
+        if(el_g&&d.settings[k]!=null) el_g.value=d.settings[k];
+      }
+    } else {
+      document.getElementById('tab-btn-google').style.display='none';
+    }
+  });
+  
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function saveProfile(e){
+  e.preventDefault();
+  var btn=document.getElementById('saveProfileBtn');
+  btn.disabled=true;
+  var msg=document.getElementById('profileMsg');
+  msg.textContent='Menyimpan...';
+  msg.style.color='var(--text)';
+  
+  fetch('/api/profile',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      name:document.getElementById('name').value,
+      email:document.getElementById('email').value,
+      phone:document.getElementById('phone').value,
+      bio:document.getElementById('bio').value
+    })
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      msg.textContent='✅ Profil berhasil disimpan';
+      msg.style.color='var(--green)';
+    }else{
+      msg.textContent='❌ Gagal: '+(d.error||'Gagal');
+      msg.style.color='var(--red)';
+    }
+    btn.disabled=false;
+  }).catch(function(err){
+    msg.textContent='❌ Error: '+err.message;
+    msg.style.color='var(--red)';
+    btn.disabled=false;
+  });
+}
+
+function uploadPhoto(){
+  var f=document.getElementById('photoInput').files[0];
+  if(!f)return;
+  var fd=new FormData();
+  fd.append('photo',f);
+  var msg=document.getElementById('profileMsg');
+  msg.textContent='Mengunggah...';
+  msg.style.color='var(--text)';
+  
+  fetch('/api/profile/photo',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      document.getElementById('avatar').innerHTML='<img src="'+d.photo_url+'" style="width:100%;height:100%;object-fit:cover">';
+      document.getElementById('removePhoto').style.display='block';
+      msg.textContent='✅ Foto diperbarui';
+      msg.style.color='var(--green)';
+    }else{
+      msg.textContent='❌ Gagal: '+(d.error||'Gagal');
+      msg.style.color='var(--red)';
+    }
+  }).catch(function(err){
+    msg.textContent='❌ Error: '+err.message;
+    msg.style.color='var(--red)';
+  });
+}
+
+function removePhoto(){
+  document.getElementById('avatar').innerHTML='👤';
+  document.getElementById('removePhoto').style.display='none';
+  var msg=document.getElementById('profileMsg');
+  msg.textContent='ℹ️ Foto dihapus dari tampilan (reload untuk mengembalikan)';
+  msg.style.color='var(--green)';
+}
+
+function saveTgSettings(e){
+  e.preventDefault();
+  var btn=document.getElementById('saveTgBtn');
+  btn.disabled=true;
+  var msg=document.getElementById('tgMsg');
+  msg.textContent='Menyimpan...';
+  msg.style.color='var(--text)';
+  
+  fetch('/api/settings/telegram',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      api_id:document.getElementById('api_id').value,
+      api_hash:document.getElementById('api_hash').value,
+      bot_token:document.getElementById('bot_token').value,
+      channel_id:document.getElementById('channel_id').value
+    })
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      msg.textContent='✅ Pengaturan Telegram tersimpan';
+      msg.style.color='var(--green)';
+    }else{
+      msg.textContent='❌ Gagal: '+(d.error||'Gagal');
+      msg.style.color='var(--red)';
+    }
+    btn.disabled=false;
+  }).catch(function(err){
+    msg.textContent='❌ Error: '+err.message;
+    msg.style.color='var(--red)';
+    btn.disabled=false;
+  });
+}
+
+function testTelegramSettingsNew(){
+  var btn=document.getElementById('testTgBtn');
+  btn.disabled=true;
+  var msg=document.getElementById('tgMsg');
+  msg.textContent='Menguji koneksi...';
+  msg.style.color='var(--text)';
+  
+  fetch('/api/settings/telegram/test',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+    if(d.connected){
+      msg.textContent='✅ Terhubung ke '+(d.channel||'channel')+(d.username?' via @'+d.username:'');
+      msg.style.color='var(--green)';
+    }else{
+      msg.textContent='❌ Koneksi gagal: '+(d.error||'Gagal');
+      msg.style.color='var(--red)';
+    }
+    btn.disabled=false;
+  }).catch(function(err){
+    msg.textContent='❌ Error: '+err.message;
+    msg.style.color='var(--red)';
+    btn.disabled=false;
+  });
+}
+
+function saveGoogleSettings(e){
+  e.preventDefault();
+  var btn=document.getElementById('saveGoogleBtn');
+  btn.disabled=true;
+  var msg=document.getElementById('googleMsg');
+  msg.textContent='Menyimpan...';
+  msg.style.color='var(--text)';
+  
+  var body={};
+  var keys = ['GDRIVE_CLIENT_ID','GDRIVE_CLIENT_SECRET','PHOTOS_CLIENT_ID','PHOTOS_CLIENT_SECRET'];
+  for(var i=0; i<keys.length; i++){
+    var k = keys[i];
+    body[k]=document.getElementById(k).value;
+  }
+  
+  fetch('/api/settings',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      msg.textContent='✅ Kredensial Google disimpan';
+      msg.style.color='var(--green)';
+    }else{
+      msg.textContent='❌ Gagal: '+(d.error||'Gagal');
+      msg.style.color='var(--red)';
+    }
+    btn.disabled=false;
+  }).catch(function(err){
+    msg.textContent='❌ Error: '+err.message;
+    msg.style.color='var(--red)';
+    btn.disabled=false;
+  });
+}
+
+function restartServiceNew(){
+  var btn=document.getElementById('restartBtn');
+  btn.disabled=true;
+  var msg=document.getElementById('googleMsg');
+  msg.textContent='Memulai ulang layanan...';
+  msg.style.color='var(--text)';
+  
+  fetch('/api/settings/restart',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      msg.textContent='✅ Layanan sedang di-restart. Tunggu beberapa detik...';
+      msg.style.color='var(--green)';
+    }else{
+      msg.textContent='❌ Gagal: '+(d.error||'Gagal');
+      msg.style.color='var(--red)';
+    }
+    btn.disabled=false;
+  }).catch(function(err){
+    msg.textContent='❌ Error: '+err.message;
+    msg.style.color='var(--red)';
+    btn.disabled=false;
+  });
+}
+
 function previewShell(id,name,body){return '<div class="preview-shell"><div class="preview-head"><span>'+escHtml(name)+'</span><a class="preview-download" href="/api/download/'+id+'">Download</a></div><div class="preview-body">'+body+'</div></div>';}
 function openFilePreview(id,name,mime){
   name=name||'File';mime=mime||'';var n=name.toLowerCase(),el=document.getElementById('previewContent');
@@ -1925,6 +2359,14 @@ init();
 </body>
 </html>'''
 
+# Register the extension only after this module has fully defined its helpers.
+# When launched by systemd as `web.py`, the executable module is named
+# `__main__`; alias it before web_drive imports `web` so no second Flask app or
+# second copy of the host module can be created.
+sys.modules.setdefault("web", sys.modules[__name__])
+from web_drive import register_drive_features
+register_drive_features(app)
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -1936,5 +2378,4 @@ if __name__ == "__main__":
     future = asyncio.run_coroutine_threadsafe(_init_telethon(), loop)
     future.result(timeout=30)
     print("[*] Starting web server on port 8050...")
-    register_drive_features(app)
     app.run(host="0.0.0.0", port=8050, debug=False)
