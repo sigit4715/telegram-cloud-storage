@@ -279,9 +279,19 @@ def init_db():
     # Existing global data belongs to the original account; new accounts start empty.
     conn.execute("UPDATE files SET owner_email=? WHERE owner_email=''", ("bowor4751@gmail.com",))
     conn.execute("UPDATE folders SET owner_email=? WHERE owner_email=''", ("bowor4751@gmail.com",))
+    
+    # Existing indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_folder ON files(owner_email, folder_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_deleted ON files(owner_email, deleted_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_owner_parent ON folders(owner_email, parent_id)")
+    
+    # New indexes for better query performance
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_mime ON files(owner_email, mime)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_uploaded ON files(owner_email, uploaded_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_size ON files(owner_email, size)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_owner_favorite ON files(owner_email, is_favorite)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_owner_name ON folders(owner_email, name)")
+    
     conn.commit()
     conn.close()
     telegram_accounts.init_telegram_accounts(DB_PATH)
@@ -647,6 +657,10 @@ def api_upload():
         except Exception as e:
             results.append({"name": name, "error": str(e), "ok": False})
 
+    # Invalidate stats cache after upload
+    from cache import app_cache
+    app_cache.delete(f"stats:{owner}")
+    
     return jsonify({"results": results})
 
 @app.route("/api/download/<int:fid>")
@@ -786,10 +800,16 @@ def api_office_preview(fid):
 @limiter.limit("20 per minute")  # Prevent mass deletion
 def api_delete(fid):
     # Normal delete is reversible: keep the Telegram file intact until explicitly purged.
-    row = db_query("SELECT id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
+    owner = current_owner()
+    row = db_query("SELECT id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, owner))
     if not row:
         return jsonify({"error": "Not found"}), 404
-    db_exec("UPDATE files SET deleted_at=datetime('now','localtime') WHERE id=? AND owner_email=?", (fid, current_owner()))
+    db_exec("UPDATE files SET deleted_at=datetime('now','localtime') WHERE id=? AND owner_email=?", (fid, owner))
+    
+    # Invalidate stats cache after delete
+    from cache import app_cache
+    app_cache.delete(f"stats:{owner}")
+    
     return jsonify({"ok": True, "trashed": True})
 
 @app.route("/api/navigation/<section>")
@@ -945,7 +965,17 @@ def api_recent():
 @app.route("/api/stats")
 @login_required
 def api_stats():
+    from cache import app_cache
+    
     owner = current_owner()
+    cache_key = f"stats:{owner}"
+    
+    # Try to get from cache first
+    cached_stats = app_cache.get(cache_key)
+    if cached_stats:
+        return jsonify(cached_stats)
+    
+    # Calculate stats (cache miss)
     total_files = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL", (owner,)) or 0
     total_size = db_scalar("SELECT COALESCE(SUM(size),0) FROM files WHERE owner_email=? AND deleted_at IS NULL", (owner,)) or 0
     images = db_scalar("SELECT COUNT(*) FROM files WHERE owner_email=? AND deleted_at IS NULL AND mime LIKE 'image/%'", (owner,)) or 0
@@ -966,7 +996,8 @@ def api_stats():
         elif name.endswith((".doc", ".docx", ".txt", ".rtf")): key = "document"
         else: key = "other"
         type_sizes[key] += size
-    return jsonify({
+    
+    stats = {
         "total_files": total_files,
         "total_size": total_size,
         "total_size_human": human_size(total_size),
@@ -976,7 +1007,12 @@ def api_stats():
         "others": others,
         "folders": folders,
         "type_sizes": type_sizes,
-    })
+    }
+    
+    # Cache the stats for 5 minutes
+    app_cache.set(cache_key, stats, ttl=300)
+    
+    return jsonify(stats)
 
 
 
