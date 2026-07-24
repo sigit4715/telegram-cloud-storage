@@ -50,6 +50,8 @@ from datetime import datetime, timedelta, timezone
 # ----------------------------------------------------------------------------
 # Integration with the host web.py module (graceful fallback if not present)
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------# Integration with the host web.py module (graceful fallback if not present)
+# ----------------------------------------------------------------------------
 try:
     from web import (
         app as _host_app,
@@ -57,6 +59,7 @@ try:
         db_query, db_exec, db_scalar,
         run_async, get_telegram_client, telegram_target, require_telegram_config,
         DB_PATH, BASE, cfg, TELEGRAM_CONFIG_KEY,
+        limiter  # Import rate limiter from web.py
     )
     import telegram_accounts
     _HAS_HOST = True
@@ -64,6 +67,7 @@ except Exception:  # pragma: no cover - standalone testing
     import telegram_accounts
     TELEGRAM_CONFIG_KEY = "telegram-cloud-local-key"
     _HAS_HOST = False
+    limiter = None  # Fallback if not available
 
 def _telegram_for_owner(owner):
     """Return only the passed owner's client, channel and async bridge.
@@ -329,6 +333,7 @@ def api_profile_get():
     })
 
 @drive_ext.route("/api/profile", methods=["POST"])
+@limiter.limit("10 per minute")  # Prevent profile spam
 def api_profile_post():
     uid = session.get("user_id")
     if not uid:
@@ -480,6 +485,7 @@ def _ensure_cfg_loaded():
 #  GOOGLE DRIVE FEATURES
 # ============================================================================
 @drive_ext.route("/api/gdrive/auth")
+@limiter.limit("5 per minute")  # Prevent OAuth abuse
 def gdrive_auth():
     _ensure_cfg_loaded()
     uid = session.get("user_id")
@@ -2307,6 +2313,7 @@ def api_telegram_settings_test():
 
 
 @drive_ext.route("/api/settings", methods=["GET"])
+@limiter.limit("30 per minute")  # Admin settings
 def api_settings_get():
     uid = session.get("user_id")
     if uid not in SETTINGS_ALLOWED_IDS:
@@ -2329,6 +2336,7 @@ def api_settings_get():
 
 
 @drive_ext.route("/api/settings", methods=["POST"])
+@limiter.limit("10 per minute")  # Prevent settings abuse
 def api_settings_post():
     uid = session.get("user_id")
     if uid not in SETTINGS_ALLOWED_IDS:

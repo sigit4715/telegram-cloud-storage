@@ -11,12 +11,16 @@ import hashlib
 import asyncio
 import threading
 import sys
+import logging
 from datetime import datetime
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_file, send_from_directory, redirect, url_for, session
 from urllib.parse import urlencode
 from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
 try:
     from telethon import TelegramClient
     from telethon.tl.types import DocumentAttributeFilename
@@ -28,6 +32,26 @@ except ModuleNotFoundError:  # local non-Telethon test environments
     class FloodWaitError(Exception):  # pragma: no cover
         seconds = 0
 import telegram_accounts as telegram_accounts
+
+# ============================================================
+# LOGGING CONFIGURATION
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# File handler for audit logs (separate from main logger)
+audit_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'audit.log')
+audit_handler = logging.FileHandler(audit_log_path, mode='a', encoding='utf-8')
+audit_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+audit_logger = logging.getLogger('audit')
+audit_logger.addHandler(audit_handler)
+audit_logger.setLevel(logging.INFO)
 
 # ============================================================
 # CONFIG
@@ -61,6 +85,13 @@ ALLOWED = set(x.strip() for x in cfg.get("ALLOWED_USERS", "").split(",") if x.st
 # GOOGLE_ALLOWED_EMAILS is intentionally not used as a login gate.
 GOOGLE_ALLOWED_EMAILS = set()
 ADMIN_IDS = {"5337119189"}
+
+# ============================================================
+# FILE SIZE LIMITS (configurable)
+# ============================================================
+MAX_FILE_SIZE_MB = int(cfg.get("MAX_FILE_SIZE_MB", "2048"))  # Default 2GB (Telegram limit)
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+MAX_FILES_PER_UPLOAD = int(cfg.get("MAX_FILES_PER_UPLOAD", "10"))  # Max files per multi-upload
 
 # ============================================================
 # TELEGRAM PER ACCOUNT (async bridge)
@@ -155,6 +186,16 @@ async def _init_telethon():
 # ============================================================
 # DATABASE
 # ============================================================
+def sanitize_input(text):
+    """Sanitize user input to prevent XSS and SQL injection"""
+    if not isinstance(text, str):
+        return text
+    # Remove potentially dangerous characters
+    import re
+    text = re.sub(r'[<>"\']', '', text)  # Remove HTML/JS chars
+    text = text.strip()
+    return text
+
 def db_query(sql, params=()):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -270,6 +311,40 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
+# ============================================================
+# RATE LIMITING
+# ============================================================
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://",  # Use redis://localhost:6379 for production with Redis
+    strategy="fixed-window"
+)
+
+# ============================================================
+# SECURITY HEADERS
+# ============================================================
+@app.after_request
+def set_security_headers(response):
+    """Add security headers to all responses"""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    # CSP - Content Security Policy (adjust for your needs)
+    csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
+    response.headers['Content-Security-Policy'] = csp
+    return response
+
+@app.before_request
+def log_request_info():
+    """Log incoming requests for audit trail"""
+    logger.info(f"{request.method} {request.url} from {request.remote_addr}")
+    # Log to audit file for compliance
+    audit_logger.info(f"{request.method} {request.url} from {request.remote_addr} User-Agent: {request.user_agent.string}")
+
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -286,6 +361,7 @@ def login_required(f):
 # AUTH API
 # ============================================================
 @app.route("/api/login", methods=["POST"])
+@limiter.limit("10 per minute")  # Prevent brute force
 def api_login():
     data = request.get_json()
     uid = str(data.get("user_id", "")).strip()
@@ -468,12 +544,15 @@ def api_files():
 
 @app.route("/api/upload", methods=["POST"])
 @login_required
+@limiter.limit("30 per minute")  # Prevent upload flooding
 def api_upload():
     owner = current_owner()
     files = request.files.getlist("files")
     folder_id = int(request.form.get("folder_id", 0))
     if not files:
         return jsonify({"error": "No files"}), 400
+    if len(files) > MAX_FILES_PER_UPLOAD:
+        return jsonify({"error": f"Too many files. Maximum {MAX_FILES_PER_UPLOAD} files per upload"}), 400
     if folder_id and not db_query("SELECT id FROM folders WHERE id=? AND owner_email=?", (folder_id, owner)):
         return jsonify({"error": "Folder tidak ditemukan"}), 404
 
@@ -481,9 +560,15 @@ def api_upload():
     for f in files:
         if not f.filename:
             continue
-        name = f.filename
+        name = sanitize_input(f.filename)
         data = f.read()
         size = len(data)
+        
+        # Check file size limit
+        if size > MAX_FILE_SIZE_BYTES:
+            results.append({"name": name, "error": f"File too large. Maximum size: {MAX_FILE_SIZE_MB}MB"})
+            continue
+        
         mime = f.content_type or "application/octet-stream"
         fh = hashlib.md5(name.encode()).hexdigest()[:12]
 
@@ -642,6 +727,7 @@ def api_office_preview(fid):
 
 @app.route("/api/delete/<int:fid>", methods=["DELETE"])
 @login_required
+@limiter.limit("20 per minute")  # Prevent mass deletion
 def api_delete(fid):
     # Normal delete is reversible: keep the Telegram file intact until explicitly purged.
     row = db_query("SELECT id FROM files WHERE id=? AND owner_email=? AND deleted_at IS NULL", (fid, current_owner()))
