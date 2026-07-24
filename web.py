@@ -338,6 +338,51 @@ def set_security_headers(response):
     response.headers['Content-Security-Policy'] = csp
     return response
 
+# ============================================================
+# ERROR HANDLING MIDDLEWARE
+# ============================================================
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 Not Found"""
+    logger.warning(f"404 Not Found: {request.url}")
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Endpoint not found"}), 404
+    return """
+    <html>
+    <head><title>404 Not Found</title></head>
+    <body style="background:#1a1a2e;color:#fff;font-family:sans-serif;text-align:center;padding:50px">
+        <h1>404 - Halaman Tidak Ditemukan</h1>
+        <p>URL yang Anda cari tidak tersedia.</p>
+        <a href="/" style="color:#7c3aed">← Kembali ke Beranda</a>
+    </body>
+    </html>
+    """, 404
+
+@app.errorhandler(429)
+def rate_limit_exceeded(error):
+    """Handle 429 Too Many Requests"""
+    logger.warning(f"Rate limit exceeded: {request.url} from {request.remote_addr}")
+    audit_logger.info(f"RATE_LIMIT_EXCEEDED ip={request.remote_addr} url={request.url}")
+    return jsonify({"error": "Terlalu banyak request. Silakan coba lagi dalam beberapa menit."}), 429
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 Internal Server Error"""
+    logger.error(f"500 Internal Server Error: {request.url} - {str(error)}")
+    audit_logger.error(f"INTERNAL_ERROR url={request.url} error={str(error)}")
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Internal server error"}), 500
+    return """
+    <html>
+    <head><title>500 Internal Server Error</title></head>
+    <body style="background:#1a1a2e;color:#fff;font-family:sans-serif;text-align:center;padding:50px">
+        <h1>500 - Kesalahan Server</h1>
+        <p>Terjadi kesalahan internal. Tim kami telah diberitahu.</p>
+        <a href="/" style="color:#7c3aed">← Kembali ke Beranda</a>
+    </body>
+    </html>
+    """, 500
+
 @app.before_request
 def log_request_info():
     """Log incoming requests for audit trail"""
@@ -370,7 +415,18 @@ def api_login():
     is_allowed = (uid in ALLOWED) or (uid.lower() in GOOGLE_ALLOWED_EMAILS)
     if not is_allowed and uid not in ADMIN_IDS:
         return jsonify({"error": "ID tidak terdaftar"}), 403
+    
+    # Session regeneration to prevent session fixation
+    session.clear()
+    # Flask doesn't have regenerate(), so we modify the session key
+    from flask import session as sess
+    sess.modified = True
     session["user_id"] = uid
+    session.permanent = True
+    
+    logger.info(f"User {uid} logged in successfully")
+    audit_logger.info(f"LOGIN_SUCCESS user={uid} ip={request.remote_addr}")
+    
     return jsonify({"ok": True, "user_id": uid})
 
 @app.route("/api/logout", methods=["POST"])

@@ -62,12 +62,19 @@ try:
         limiter  # Import rate limiter from web.py
     )
     import telegram_accounts
+    from encryption import encrypt_token, decrypt_token, encrypt_if_needed, decrypt_if_needed, migrate_plaintext_tokens
     _HAS_HOST = True
 except Exception:  # pragma: no cover - standalone testing
     import telegram_accounts
     TELEGRAM_CONFIG_KEY = "telegram-cloud-local-key"
     _HAS_HOST = False
     limiter = None  # Fallback if not available
+    # Fallback encryption functions
+    def encrypt_token(x): return x
+    def decrypt_token(x): return x
+    def encrypt_if_needed(x): return x
+    def decrypt_if_needed(x): return x
+    def migrate_plaintext_tokens(e, q): return 0
 
 def _telegram_for_owner(owner):
     """Return only the passed owner's client, channel and async bridge.
@@ -217,6 +224,14 @@ def init_drive_db():
         db_exec("DROP TABLE sync_errors_legacy_owner_migration")
     db_exec("CREATE INDEX IF NOT EXISTS idx_sync_errors_owner ON sync_errors(owner_email, resolved)")
     db_exec("DELETE FROM google_oauth_states WHERE created_at < ?", (int(_time.time()) - 900,))
+    
+    # Migrate existing plaintext tokens to encrypted format
+    try:
+        migrated = migrate_plaintext_tokens(db_exec, db_query)
+        if migrated > 0:
+            print(f"[ENCRYPTION] Migrated {migrated} Google tokens to encrypted format")
+    except Exception as e:
+        print(f"[ENCRYPTION] Token migration skipped: {e}")
 
 # ----------------------------------------------------------------------------
 # Google credentials loading
@@ -439,9 +454,14 @@ def _get_credentials(uid):
     if not row:
         return None
     r = row[0]
+    
+    # Decrypt tokens before use
+    access_token = decrypt_token(r["access_token"])
+    refresh_token = decrypt_token(r["refresh_token"])
+    
     creds = Credentials(
-        token=r["access_token"],
-        refresh_token=r["refresh_token"],
+        token=access_token,
+        refresh_token=refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=cfg.get("GDRIVE_CLIENT_ID"),
         client_secret=cfg.get("GDRIVE_CLIENT_SECRET"),
@@ -451,9 +471,11 @@ def _get_credentials(uid):
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(GoogleRequest())
+            # Encrypt new token before storage
+            encrypted_token = encrypt_token(creds.token)
             db_exec(
                 "UPDATE google_tokens SET access_token=?, token_expiry=? WHERE user_id=?",
-                (creds.token, creds.expiry.isoformat(), uid),
+                (encrypted_token, creds.expiry.isoformat(), uid),
             )
         except Exception as e:
             print(f"[gdrive] token refresh failed: {e}")
@@ -613,6 +635,11 @@ def gdrive_callback():
 
     creds = flow.credentials
     expiry = creds.expiry.isoformat() if creds.expiry else None
+    
+    # Encrypt tokens before storage
+    encrypted_access = encrypt_token(creds.token) if creds.token else ""
+    encrypted_refresh = encrypt_token(creds.refresh_token) if creds.refresh_token else ""
+    
     db_exec(
         """INSERT INTO google_tokens (user_id, access_token, refresh_token, token_expiry)
            VALUES (?,?,?,?)
@@ -620,7 +647,7 @@ def gdrive_callback():
              access_token=excluded.access_token,
              refresh_token=COALESCE(excluded.refresh_token, google_tokens.refresh_token),
              token_expiry=excluded.token_expiry""",
-        (uid, creds.token, creds.refresh_token, expiry),
+        (uid, encrypted_access, encrypted_refresh, expiry),
     )
     session.pop("gdrive_state", None)
     session.pop("gdrive_uid", None)
